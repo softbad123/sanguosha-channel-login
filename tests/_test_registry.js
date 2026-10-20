@@ -1,0 +1,12 @@
+﻿const fs=require('fs'),vm=require('vm');
+const src=fs.readFileSync('三国杀多渠道登录.user.js','utf8');
+const start=src.indexOf('const ChannelRegistry = (() => {');
+const end=src.indexOf('})();', start)+'})();'.length;
+const block=src.slice(start,end);
+const ctx={Object,Array,Set,Map,URL,JSON,console};
+vm.createContext(ctx);
+vm.runInContext(block+'\nthis.__R=ChannelRegistry;',ctx);
+const R=ctx.__R;
+console.log(R.channels.map(c=>c.id+':'+c.name+':'+c.capability).join('\n'));
+const o=R.get('oppo');
+console.log('OPPO', JSON.stringify({platformId:o.platformId,gameChannelId:o.gameChannelId,loginEndpoint:o.loginEndpoint,options:o.loginOptions,accountPage:o.accountPage,launch:o.launch,bridge:o.bridge},null,2));

@@ -1,0 +1,12 @@
+node_modules/
+*.log
+*.zip
+backup-*.js
+recovered-*.js
+baseline-*.js
+_chrome-profile*/
+_edge-profile*/
+_tm-extension/
+_screen*.png
+_shot*.png
+_docs_shots/
