@@ -5,7 +5,7 @@
 // @author       softbad123（维护者）
 // @homepageURL  https://github.com/softbad123/sanguosha-channel-login
 // @supportURL   https://github.com/softbad123/sanguosha-channel-login/issues
-// @version      1.1.3
+// @version      1.1.4
 // @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和账号管理直达。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
 // @match        https://web.sanguosha.com/*
 // @match        https://joint.vivo.com.cn/game-subaccount-login/*
@@ -1816,7 +1816,7 @@ const ChannelCore = (() => {
   const LEGACY_TRANSIENT_PROFILE_KEY = CHANNEL.contextPrefix + '-transient-profile-v1';
   const LOGIN_PAGE = 'https://web.sanguosha.com/login/10th_client/index.html';
   const PENDING_ACCOUNT_KEY = 'sgs-unified-pending-account-v1';
-  const VERSION = '1.1.3';
+  const VERSION = '1.1.4';
   const NETWORK_TIMEOUT = 60000;
   const isBrowserChannel = ChannelRegistry.isBrowser(CHANNEL);
   const hasDirectLogin = CHANNEL.loginOptions.some(option => option.kind === 'direct');
@@ -3610,8 +3610,9 @@ const ChannelCore = (() => {
 /* DIRECT-ENGINE-BEGIN */
 (() => {
   'use strict';
-  const VERSION = '1.1.3';
+  const VERSION = '1.1.4';
   const ORIGIN = 'https://web.sanguosha.com';
+  const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
   const SESSION_KEY = 'wegame.qq.session.v1';
   const SESSION_STORE_PREFIX = 'sgs-login-session-v3:';
   // This is the local record's availability, not the channel credential lifetime.
@@ -3624,7 +3625,13 @@ const ChannelCore = (() => {
   // logins still complete as soon as the official handoff is ready.
   const HANDOFF_TTL = 240000;
   const GAME_HANDOFF_TIMEOUT = 240000;
-  const ENTRY_GUARD_TTL = 60000;
+  const IS_QQ_BROWSER = (() => {
+    try { return typeof navigator === 'object' && /QQBrowser\//i.test(String(navigator.userAgent || '')); }
+    catch (_) { return false; }
+  })();
+  // QQ Browser can spend longer on Laya's asset warm-up. Keep the
+  // no-credential entry guard for the same bounded window as the handoff.
+  const ENTRY_GUARD_TTL = IS_QQ_BROWSER ? 240000 : 60000;
   const DEFAULT_REQUEST_TIMEOUT = 60000;
   const TAB_KEY = 'wegame.qq.tab.v1';
   const STEAM_PENDING_KEY = 'unified.steam.pending.v1';
@@ -4097,17 +4104,38 @@ const ChannelCore = (() => {
       return !!id && !!savedSession('', '', id);
     } catch (_) { return false; }
   }
+  function isHandoffRouteName(value) {
+    return typeof value === 'string' && value.length <= 96 && value.startsWith(PREFIX) &&
+      /^[a-f0-9]{32}$/.test(value.slice(PREFIX.length));
+  }
+  // QQ Browser may clear window.name when a same-site navigation is promoted
+  // to a new tab. The handoff itself is already tab-scoped, so recover the
+  // opaque route name from that record instead of dropping the login.
+  function routedHandoffName() {
+    let direct = '';
+    try { direct = window.name; } catch (_) {}
+    if (isHandoffRouteName(direct)) return direct;
+    let handoff = null;
+    try { handoff = readHandoff(); } catch (_) {}
+    if (!handoff || !isHandoffRouteName(handoff.name) || !(Number(handoff.expires) > Date.now())) return '';
+    if (EMBEDDED) return handoff.name;
+    try {
+      const tabId = sessionStorage.getItem(TAB_KEY);
+      return tabId && handoff.id === tabId ? handoff.name : '';
+    } catch (_) { return ''; }
+  }
   if (location.pathname === '/login/x/index' && isWeGameTab()) {
-    location.replace(ORIGIN + '/login/index.html'); return;
+    location.replace(LOGIN_PAGE); return;
   }
   // Preserve the verified channel's official bootstrap contract. No auth in URLs.
   if (location.pathname === '/10/pc/index.php' || location.pathname === '/10/pc/bilibiliWD_index.php' ||
     location.pathname === '/x/pc/index.php') {
-    if (!window.name.startsWith(PREFIX)) {
-      if (isWeGameTab()) location.replace(ORIGIN + '/login/index.html');
+    const name = routedHandoffName();
+    if (!name) {
+      if (isWeGameTab()) location.replace(LOGIN_PAGE);
       return;
     }
-    const name = window.name;
+    try { window.name = name; } catch (_) {}
     let grant, payload;
     try {
       const handoff = readHandoff();

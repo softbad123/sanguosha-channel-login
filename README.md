@@ -2,9 +2,9 @@
 
 在三国杀网页版登录页提供一个统一的多渠道登录面板，把当前浏览器会话接到渠道官方的扫码、网页授权和游卡兑换链路，并在本机提供账号管理与快速直登。
 
-当前版本：`1.1.3`
+当前版本：`1.1.4`
 支持渠道：小米、Vivo、OPPO、华为、哔哩哔哩、WeGame、Steam（共 7 个）  
-运行方式：Tampermonkey 用户脚本（Chrome / Edge）
+运行方式：Tampermonkey 用户脚本（Chrome / Edge / QQ 浏览器极速模式）
 
 > 本项目是本地辅助工具，不绕过官方登录、实名、支付或风控。最终能否登录仍由渠道服务器、游卡服务器及账号状态共同决定。  
 > 截图中的账号名称、区服和记录均为演示数据。
@@ -15,6 +15,13 @@
 - 原始源码：[@暗鹊《统一登录器》](https://github.com/Clarrycy/jinnangmiaoji/blob/main/jinnangdai/payload/unified-login.user.js)。
 - 本项目基于上述源码整理、维护与扩展。谨向 @暗鹊 致以诚挚感谢；本仓库并非 @暗鹊 官方发布。
 - 维护者：softbad123。修改说明、第三方来源与许可证状态见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 1.1.4 更新
+
+- 增加 QQ 浏览器专项兼容：同站导航被浏览器提升到新标签、或浏览器清空 `window.name` 时，从标签级一次性交接记录恢复不透明路由名，不再直接丢失登录凭证。
+- QQ 浏览器的无凭证入场守卫延长至 240 秒，与游戏交接上限一致，覆盖 Laya 资源加载和慢网络下延迟出现的 `EnterLoginScene` / `GotoLogout`；其他浏览器仍保持 60 秒。
+- 修复登录回退目标错误：`/login/x/index` 或无有效交接的游戏页不再被送往经典 OL 的 `/login/index.html`，统一回到一将成名 `/login/10th_client/index.html`。
+- 新增 QQ 浏览器交接回归测试，覆盖 `window.name` 丢失、标签标记匹配、跨标签拒绝和过期交接。
 
 ## 1.1.3 更新
 
@@ -74,10 +81,10 @@
 
 1. 在 Chrome 或 Edge 中安装 [Tampermonkey](https://www.tampermonkey.net/)。
 2. 打开本项目的 [最新 Release](https://github.com/softbad123/sanguosha-channel-login/releases/latest)。
-3. 下载 `sanguosha-channel-login-v1.1.3.user.js`，在 Tampermonkey 中导入并启用。
+3. 下载 `sanguosha-channel-login-v1.1.4.user.js`，在 Tampermonkey 中导入并启用。
 4. 停用或删除旧的“小米服登录器”“统一登录器”以及旧版“三国杀多渠道登录”脚本，避免同页重复注入。
 5. 打开 <https://web.sanguosha.com/login/10th_client/index.html>。
-6. 页面右侧出现登录面板后，确认页脚显示 `v1.1.3 · 多渠道本地版 · 7 个渠道`。
+6. 页面右侧出现登录面板后，确认页脚显示 `v1.1.4 · 多渠道本地版 · 7 个渠道`。
 
 ### 方式二：从源码安装
 
@@ -134,6 +141,10 @@ Steam 登录使用 `store.steampowered.com` 官方 OAuth 页面。扫码、账�
 **面板没有出现**  
 确认 Tampermonkey 已启用、脚本匹配 `https://web.sanguosha.com/*`，并停用其他旧登录脚本后刷新页面。
 
+**QQ 浏览器菜单显示“没有运行中的脚本”**
+
+“已启用”只表示 Tampermonkey 扩展本身已启用；“没有运行中的脚本”表示当前标签页没有匹配到正在运行的用户脚本。请确认页面处于 QQ 浏览器“极速模式”而非兼容/IE 模式，Tampermonkey 的站点访问权限允许 `web.sanguosha.com`，脚本已在管理面板启用；导入后对目标页执行硬刷新（`Ctrl+Shift+R`）或重新打开标签页。若登录面板已经出现，说明注入正常，后续跳回登录页应按下一节的交接问题排查。
+
 **扫码成功但游戏没有继续**  
 先查看面板状态和“运行记录”中的阶段与 HTTP 状态；不要连续点击多个渠道按钮，等待当前流程结束或先取消。
 
@@ -152,11 +163,11 @@ Steam 登录使用 `store.steampowered.com` 官方 OAuth 页面。扫码、账�
 
 **登录后进入加载页，又返回主登录页**
 
-`1.1.3` 已修复 WeGame 的 `PlatformID` 凭证误判。若仍复现，请先确认没有同时启用旧版登录脚本，再导出诊断；诊断中应关注 `AccountInfo.Self` 是否存在 `Token`、`Ticket` 或 `WeGameTicket`，以及是否出现 `GotoLogout`。慢网下请给官方请求和游戏加载最多 4 分钟，不要连续重复点击登录。
+`1.1.3` 已修复 WeGame 的 `PlatformID` 凭证误判；`1.1.4` 又修复了 QQ 浏览器丢失 `window.name` 后交接无法恢复，以及回退到经典 OL 登录页的问题。若仍复现，请先确认版本为 `1.1.4`、没有同时启用旧版登录脚本，再导出诊断；诊断中应关注 `AccountInfo.Self` 是否存在 `Token`、`Ticket` 或 `WeGameTicket`，以及是否出现 `GotoLogout`。QQ 浏览器慢网下请给官方请求和游戏加载最多 4 分钟，不要连续重复点击登录。
 
 **慢网络下如何理解超时**
 
-脚本没有加入固定延时。官方接口请求最多等待 60 秒，票据交给游戏后的入场与资料同步最多等待 240 秒；网络恢复后流程会继续。若超过上限仍失败，通常是渠道票据失效、游戏服务器不可达或页面已关闭，请重新发起官方授权而不是反复点击旧流程。
+脚本没有加入固定延时。官方接口请求最多等待 60 秒，票据交给游戏后的入场与资料同步最多等待 240 秒；QQ 浏览器的无凭证入场守卫也使用完整的 240 秒上限。网络恢复后流程会继续。若超过上限仍失败，通常是渠道票据失效、游戏服务器不可达或页面已关闭，请重新发起官方授权而不是反复点击旧流程。
 
 ## 开发与验证
 
@@ -166,6 +177,7 @@ Steam 登录使用 `store.steampowered.com` 官方 OAuth 页面。扫码、账�
 - `tests/_test_registry_security.js` 校验渠道域名与 `@connect` 配置一致。
 - `tests/_test_wegame_profile.js` 校验 WeGame 状态文案、区服读取和角色资料回填。
 - `tests/_test_credits.js` 校验第一作者、固定源码链接和 Apache-2.0 许可证声明。
+- `tests/_test_qq_handoff.js` 校验 QQ 浏览器标签被提升后的交接恢复、标签隔离与守卫时长。
 - 账号恢复、WeGame 竞态、Vivo / OPPO / Steam / B 站交接等均保留 Node 回归测试。
 
 运行纯 Node 回归测试：
