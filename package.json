@@ -1,6 +1,6 @@
 {
   "name": "sanguosha-channel-login",
-  "version": "1.1.4",
+  "version": "1.2.0",
   "private": true,
   "description": "三国杀一将成名网页版多渠道服登录器（Tampermonkey）",
   "scripts": {

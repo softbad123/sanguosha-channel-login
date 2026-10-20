@@ -5,7 +5,9 @@
 // @author       softbad123（维护者）
 // @homepageURL  https://github.com/softbad123/sanguosha-channel-login
 // @supportURL   https://github.com/softbad123/sanguosha-channel-login/issues
-// @version      1.1.4
+// @updateURL    https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
+// @downloadURL  https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
+// @version      1.2.0
 // @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和账号管理直达。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
 // @match        https://web.sanguosha.com/*
 // @match        https://joint.vivo.com.cn/game-subaccount-login/*
@@ -66,6 +68,7 @@
 // @connect      game-login.heytap.com
 // @connect      web-login-api.sanguosha.com
 // @connect      wwwoss.sanguosha.com
+// @connect      api.github.com
 // ==/UserScript==
 
 /*
@@ -1816,8 +1819,19 @@ const ChannelCore = (() => {
   const LEGACY_TRANSIENT_PROFILE_KEY = CHANNEL.contextPrefix + '-transient-profile-v1';
   const LOGIN_PAGE = 'https://web.sanguosha.com/login/10th_client/index.html';
   const PENDING_ACCOUNT_KEY = 'sgs-unified-pending-account-v1';
-  const VERSION = '1.1.4';
+  const VERSION = '1.2.0';
   const NETWORK_TIMEOUT = 60000;
+  const GAME_ROUTE_PATTERN = /^\/(?:x|10|10th|login)\/pc\//;
+  const COLLAPSED_PANEL_WIDTH = 208;
+  const EXPANDED_PANEL_WIDTH = 336;
+  const GAME_LOGIN_WATCH_MS = 10 * 60 * 1000;
+  const UPDATE_META_URL = 'https://api.github.com/repos/softbad123/sanguosha-channel-login/releases/latest';
+  const UPDATE_DOWNLOAD_URL = 'https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js';
+  const UPDATE_PAGE_URL = 'https://github.com/softbad123/sanguosha-channel-login/releases/latest';
+  const FEEDBACK_ISSUE_URL = 'https://github.com/softbad123/sanguosha-channel-login/issues/new';
+  const UPDATE_CHECK_KEY = 'sgs-update-check-v1';
+  const FEEDBACK_LOG_KEY = 'sgs-feedback-log-v1';
+  const FEEDBACK_SESSION_KEY = 'sgs-feedback-session-v1';
   const isBrowserChannel = ChannelRegistry.isBrowser(CHANNEL);
   const hasDirectLogin = CHANNEL.loginOptions.some(option => option.kind === 'direct');
   const hasBrowserLogin = CHANNEL.loginOptions.some(option => option.kind === 'direct' && option.mode === 'browser');
@@ -1825,6 +1839,106 @@ const ChannelCore = (() => {
   const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const OWNER_PATTERN = new RegExp('^' + escapeRegExp(CHANNEL.windowPrefix) + '-(manager|profile)-[a-f0-9]{32}$');
   const WINDOW_FRAGMENT = CHANNEL.windowPrefix + '-window';
+
+  /* FEEDBACK-LOG-BEGIN */
+  function createFeedbackLog(storage, options = {}) {
+    const limit = Math.max(20, Math.min(1000, Number(options.limit) || 240));
+    const ttl = Math.max(60000, Number(options.ttl) || 30 * 24 * 60 * 60 * 1000);
+    const now = typeof options.now === 'function' ? options.now : Date.now;
+    const session = typeof options.session === 'string' ? options.session.slice(0, 64) : '';
+    const levels = new Set(['info', 'progress', 'success', 'warning', 'error']);
+    function cleanText(value, max = 600) {
+      let text = String(value == null ? '' : value)
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      text = text.replace(/\b(https?:\/\/[^\s?#]+)[?#][^\s]*/gi, '$1?<已隐藏>');
+      text = text.replace(/\b(token|ticket|code|state|session|cookie|authorization|openid|access_token|refresh_token|password|passwd)\b\s*[:=]\s*["']?[^"'\s&,;]{4,}/gi, '$1=<已隐藏>');
+      text = text.replace(/\b[A-Za-z0-9_-]{32,}\b/g, '<已隐藏>');
+      text = text.replace(/正在恢复([^，。…]{1,80})的本地/g, '正在恢复[账号]的本地');
+      text = text.replace(/并选中([^，。]{1,80})，但当前渠道/g, '并选中[账号]，但当前渠道');
+      return text.slice(0, max);
+    }
+    function cleanMeta(meta) {
+      if (!meta || typeof meta !== 'object') return {};
+      const result = {};
+      for (const key of ['stage', 'code', 'provider', 'mode', 'source']) {
+        const value = cleanText(meta[key], 160);
+        if (value) result[key] = value;
+      }
+      if (Number.isFinite(Number(meta.httpStatus))) result.httpStatus = Number(meta.httpStatus);
+      return result;
+    }
+    function normalize(entry) {
+      if (!entry || typeof entry !== 'object') return null;
+      const at = Date.parse(entry.at);
+      if (!Number.isFinite(at)) return null;
+      const message = cleanText(entry.message, 600);
+      if (!message) return null;
+      const normalized = {at: new Date(at).toISOString(), level: levels.has(entry.level) ? entry.level : 'info', message};
+      if (typeof entry.session === 'string' && /^[a-f0-9]{8,64}$/.test(entry.session)) normalized.session = entry.session;
+      const meta = cleanMeta(entry.meta);
+      if (Object.keys(meta).length) normalized.meta = meta;
+      if (Number(entry.count) > 1) normalized.count = Math.min(999, Math.floor(Number(entry.count)));
+      return normalized;
+    }
+    function trim(list) {
+      const cutoff = now() - ttl, future = now() + 60000;
+      const result = (Array.isArray(list) ? list : []).map(normalize)
+        .filter(entry => entry && Date.parse(entry.at) >= cutoff && Date.parse(entry.at) <= future);
+      while (result.length > limit) result.shift();
+      while (result.length > 20 && JSON.stringify(result).length > 96 * 1024) {
+        result.splice(0, Math.max(1, Math.floor(result.length / 4)));
+      }
+      return result;
+    }
+    function readAll() {
+      try { return trim(storage.read()); } catch (_) { return []; }
+    }
+    function writeAll(list) {
+      let safe = trim(list);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try { storage.write(safe); return safe; }
+        catch (_) { safe = safe.slice(-Math.max(20, Math.floor(safe.length / 2))); }
+      }
+      return safe;
+    }
+    function add(level, message, meta = {}) {
+      const text = cleanText(message, 600);
+      if (!text) return null;
+      const list = readAll();
+      const entry = {at: new Date(now()).toISOString(), level: levels.has(level) ? level : 'info', message: text};
+      if (session) entry.session = session;
+      const safeMeta = cleanMeta(meta);
+      if (Object.keys(safeMeta).length) entry.meta = safeMeta;
+      const previous = list[list.length - 1];
+      if (previous && previous.level === entry.level && previous.message === entry.message &&
+        JSON.stringify(previous.meta || {}) === JSON.stringify(entry.meta || {}) &&
+        Math.abs(Date.parse(entry.at) - Date.parse(previous.at)) <= 8000) {
+        previous.at = entry.at;
+        previous.count = Math.min(999, Number(previous.count || 1) + 1);
+      } else list.push(entry);
+      return writeAll(list);
+    }
+    function items() {
+      return readAll().map(entry => ({...entry, ...(entry.meta ? {meta: {...entry.meta}} : {})}));
+    }
+    function report(environment = {}) {
+      const safeEnvironment = {};
+      for (const key of ['version', 'channelId', 'channelName', 'browser', 'platform', 'language',
+        'locale', 'screen', 'viewport', 'page', 'timezone', 'updateEnabled']) {
+        const value = environment[key];
+        if (['string', 'number', 'boolean'].includes(typeof value)) safeEnvironment[key] = cleanText(value, 160);
+      }
+      return {schema: 'sgs-feedback-log-v1', generatedAt: new Date(now()).toISOString(),
+        environment: safeEnvironment, privacy: {autoUpload: false,
+          note: '日志只保存在本机；需用户主动复制或导出后再提交，未上传账号凭据。'}, entries: items()};
+    }
+    function clear() { return writeAll([]); }
+    return {add, items, report, clear};
+  }
+  /* FEEDBACK-LOG-END */
+
   // UI changes apply only to this document; each new page starts shown at the top right.
   GM_deleteValue('sgs-xiaomi-panel-prefs'); // Discard the legacy persistent preference.
   let panelState = {hidden: false, left: null, top: null};
@@ -1838,6 +1952,7 @@ const ChannelCore = (() => {
     : CHANNEL.reason;
   let statusNode, logNode, loginButton, alternateLoginButton, cancelButton, importArea, active = null;
   let panelContent, loginOptionsNode, qrNode, qrImage, qrCaption, directNote, panelCollapseButton;
+  let gameLoginWatchTimer = 0, gameLoginWatchDeadline = 0, gameLoginAutoCollapsed = false;
   const loginOptionButtons = [];
   let channelSelect, channelInfo, channelBadge, addAccountButton, switchAccountButton;
   let consumedLaunch = false;
@@ -1851,7 +1966,7 @@ const ChannelCore = (() => {
   let accountInspect, accountDetails, accountDetailsText, inspectingProfileId = null;
   let saveLoginInfo = true, transientProfile = null, pendingAutoLogin = null;
   let saveLoginToggle = null, saveLoginNote = null;
-  let statusCard, statusCaption, historyDetails, historyCount, historyFilterButton, historyClearButton, errorsOnly = false;
+  let statusCard, statusCaption, historyDetails, historyCount, historyFilterButton, historyClearButton, diagnosticsTabButton, errorsOnly = false;
   const linkedWindows = new Map();
   const ownedWindows = new Set();
   let ownerName = '';
@@ -2004,13 +2119,46 @@ const ChannelCore = (() => {
       user = unsafeWindow.UserData?.Self || unsafeWindow.UserData?.self || null;
     } catch (_) { return null; }
     if (!self && !user) return null;
-    return {
+    let identity;
+    try { identity = {
       serverId: gameField([self, user], ['SeverID', 'ServerID', 'ServerId', 'serverId', 'server_id'], 64),
       roleId: gameField([self, user], ['UserId', 'UserID', 'userId', 'RoleId', 'RoleID', 'roleId'], 80),
       roleName: gameField([user, self], ['Nickname', 'NickName', 'nickname', 'UserName'], 120),
       loginAccount: gameField([self], ['Account'], 256),
       channelAccount: gameField([self], ['ChannelAccount'], 256)
+    }; } catch (_) { return null; }
+    return gameIdentityReady(identity) ? identity : null;
+  }
+  function gameIdentityReady(identity) {
+    if (!identity || typeof identity !== 'object') return false;
+    return ['roleId', 'roleName', 'serverId', 'loginAccount', 'channelAccount'].some(field => {
+      const value = identity[field];
+      if (typeof value !== 'string') return false;
+      const text = value.trim();
+      return !!text && text !== '0' && !/^(?:null|undefined|false)$/i.test(text);
+    });
+  }
+  function watchGameLogin() {
+    if (gameLoginAutoCollapsed || gameLoginWatchTimer || !GAME_ROUTE_PATTERN.test(location.pathname)) return;
+    gameLoginWatchDeadline = Date.now() + GAME_LOGIN_WATCH_MS;
+    let delay = 500;
+    const tick = () => {
+      gameLoginWatchTimer = 0;
+      if (gameLoginAutoCollapsed) return;
+      const identity = readGameIdentity();
+      if (gameIdentityReady(identity)) {
+        gameLoginAutoCollapsed = true;
+        const wasCollapsed = !panelContent || panelContent.hidden;
+        if (setLoginPanelCollapsed(true) && !wasCollapsed) {
+          feedbackLog.add('success', '检测到游戏账号资料，已自动折叠登录面板。', {stage: 'game_login'});
+        }
+        return;
+      }
+      if (Date.now() >= gameLoginWatchDeadline) return;
+      delay = Math.min(3000, Math.round(delay * 1.35));
+      gameLoginWatchTimer = setTimeout(tick, delay);
     };
+    gameLoginWatchTimer = setTimeout(tick, delay);
   }
   function switchChannel(id, options = {}) {
     const next = ChannelRegistry.get(id);
@@ -2042,9 +2190,18 @@ const ChannelCore = (() => {
   }
   function setLoginPanelCollapsed(collapsed) {
     if (!panelContent || !panelCollapseButton) return false;
-    panelContent.hidden = !!collapsed;
-    panelCollapseButton.textContent = collapsed ? '展开' : '收起';
-    panelCollapseButton.setAttribute('aria-expanded', String(!collapsed));
+    const next = !!collapsed;
+    panelContent.hidden = next;
+    panelContent.parentElement?.classList.toggle('is-collapsed', next);
+    if (panelHost) {
+      panelHost.classList.toggle('is-collapsed', next);
+      panelHost.style.width = (next ? COLLAPSED_PANEL_WIDTH : EXPANDED_PANEL_WIDTH) + 'px';
+      const left = parseFloat(panelHost.style.left), top = parseFloat(panelHost.style.top);
+      if (Number.isFinite(left) && Number.isFinite(top)) positionPanel(left, top);
+    }
+    panelCollapseButton.textContent = next ? '展开' : '收起';
+    panelCollapseButton.title = next ? '展开登录面板' : '折叠后仅保留标题栏，减少页面遮挡';
+    panelCollapseButton.setAttribute('aria-expanded', String(!next));
     return true;
   }
   function finishLoginSurface(context = active) {
@@ -2054,7 +2211,7 @@ const ChannelCore = (() => {
   function positionPanel(left, top) {
     if (!panelHost) return;
     const rect = panelHost.getBoundingClientRect();
-    const width = rect.width || Math.min(336, window.innerWidth - 24);
+    const width = rect.width || Math.min(EXPANDED_PANEL_WIDTH, window.innerWidth - 24);
     const height = rect.height || 100;
     panelHost.style.left = Math.max(8, Math.min(left, window.innerWidth - width - 8)) + 'px';
     panelHost.style.top = Math.max(8, Math.min(top, window.innerHeight - height - 8)) + 'px';
@@ -2072,6 +2229,58 @@ const ChannelCore = (() => {
     }
   }
   const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
+  function feedbackSessionId() {
+    try {
+      const saved = sessionStorage.getItem(FEEDBACK_SESSION_KEY);
+      if (/^[a-f0-9]{16,32}$/.test(saved || '')) return saved;
+      const created = randomId().slice(0, 16);
+      sessionStorage.setItem(FEEDBACK_SESSION_KEY, created);
+      return created;
+    } catch (_) { return randomId().slice(0, 16); }
+  }
+  const feedbackLog = createFeedbackLog({
+    read: () => GM_getValue(FEEDBACK_LOG_KEY, []),
+    write: entries => GM_setValue(FEEDBACK_LOG_KEY, entries)
+  }, {limit: 240, ttl: 30 * 24 * 60 * 60 * 1000, session: feedbackSessionId()});
+  feedbackLog.add('info', '脚本已启动。', {stage: 'startup'});
+  function installFeedbackCapture() {
+    const describe = value => {
+      if (typeof value === 'string') return value;
+      if (value instanceof Error) return value.name + ': ' + value.message;
+      try { return JSON.stringify(value); } catch (_) { return String(value); }
+    };
+    const record = (level, args, stage) => {
+      try {
+        if (!Array.from(args).some(value => typeof value === 'string' && value.includes('[统一登录器]'))) return;
+        feedbackLog.add(level, Array.from(args, describe).join(' '), {stage});
+      } catch (_) {}
+    };
+    try {
+      const originalWarn = console.warn, originalError = console.error;
+      console.warn = function (...args) {
+        record('warning', args, 'console');
+        return Reflect.apply(originalWarn, console, args);
+      };
+      console.error = function (...args) {
+        record('error', args, 'console');
+        return Reflect.apply(originalError, console, args);
+      };
+    } catch (_) {}
+    window.addEventListener('unhandledrejection', event => {
+      try {
+        const reason = event?.reason;
+        feedbackLog.add('error', '未处理的异步异常：' + (reason?.message || describe(reason)), {stage: 'unhandledrejection'});
+      } catch (_) {}
+    });
+    window.addEventListener('error', event => {
+      try {
+        const source = String(event?.filename || '');
+        if (source && !/(?:sanguosha\.com|userscript|tampermonkey|violentmonkey)/i.test(source)) return;
+        feedbackLog.add('error', '页面异常：' + String(event?.message || '未知错误'), {stage: 'uncaught'});
+      } catch (_) {}
+    });
+  }
+  installFeedbackCapture();
   const instanceId = randomId();
   const pendingKey = state => PREFIX + 'pending:' + state;
   const resultKey = state => PREFIX + 'callback:' + state;
@@ -2080,7 +2289,7 @@ const ChannelCore = (() => {
     if (/失败|错误码|未完成|超时|异常|不一致|未能|拦截|无效|过期|未取得|不是本次|不正确|格式错误|缺少|启动偏晚|无法/.test(text)) return 'error';
     if (/取消|仍有响应|断开|掉线|游戏已更新|已清除/.test(text)) return 'warning';
     if (/正在|等待|请在.*(授权|登录)|请.*完成授权/.test(text)) return 'progress';
-    if (/已收到|成功|准备完成|已是最新|已保存|已复制|已移除|已绑定|已打开/.test(text)) return 'success';
+    if (/已收到|成功|准备完成|已是最新|已保存|已复制|已移除|已绑定|已打开|已自动折叠|已清空/.test(text)) return 'success';
     return 'info';
   }
   function renderStatus() {
@@ -2093,6 +2302,7 @@ const ChannelCore = (() => {
     if (!logNode) return;
     const unusual = log.filter(item => ['error', 'warning'].includes(item.level));
     if (historyCount) historyCount.textContent = log.length + ' 条' + (unusual.length ? ' · ' + unusual.length + ' 异常' : '');
+    if (diagnosticsTabButton) diagnosticsTabButton.textContent = '诊断' + (unusual.length ? ' ' + unusual.length : '');
     if (historyFilterButton) {
       historyFilterButton.textContent = errorsOnly ? '显示全部' : '仅看异常';
       historyFilterButton.setAttribute('aria-pressed', String(errorsOnly));
@@ -2123,8 +2333,129 @@ const ChannelCore = (() => {
     const level = statusLevel(text);
     log.push({time: new Date().toISOString(), status: text, level});
     if (log.length > 40) log.shift();
+    feedbackLog.add(level, text);
     renderStatus(); renderHistory();
     if (historyDetails && level === 'error') historyDetails.open = true;
+  }
+  let updateButton = null, latestVersion = '', updateCheckActive = false;
+  function browserDescription() {
+    const ua = String(navigator.userAgent || '');
+    const match = (pattern, name) => { const m = pattern.exec(ua); return m ? name + ' ' + m[1] : ''; };
+    return match(/QQBrowser\/([\d.]+)/i, 'QQ 浏览器') ||
+      match(/Edg\/([\d.]+)/i, 'Edge') || match(/Firefox\/([\d.]+)/i, 'Firefox') ||
+      match(/Chrome\/([\d.]+)/i, 'Chrome') || match(/Version\/([\d.]+).*Safari/i, 'Safari') || '未知浏览器';
+  }
+  function feedbackEnvironment() {
+    const page = location.origin + location.pathname;
+    return {version: VERSION, channelId: CHANNEL.id, channelName: CHANNEL.name,
+      browser: browserDescription(), platform: String(navigator.platform || ''), language: String(navigator.language || ''),
+      locale: String(Intl.DateTimeFormat().resolvedOptions().locale || ''), page,
+      screen: screen.width + 'x' + screen.height, viewport: window.innerWidth + 'x' + window.innerHeight,
+      timezone: String(Intl.DateTimeFormat().resolvedOptions().timeZone || ''), updateEnabled: true};
+  }
+  function feedbackReport() { return feedbackLog.report(feedbackEnvironment()); }
+  function feedbackReportText() { return JSON.stringify(feedbackReport(), null, 2); }
+  function versionParts(value) {
+    const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/i.exec(String(value || '').trim());
+    return match ? match.slice(1, 4).map(Number) : null;
+  }
+  function versionIsNewer(candidate, current) {
+    const next = versionParts(candidate), now = versionParts(current);
+    if (!next || !now) return false;
+    for (let index = 0; index < 3; index += 1) {
+      if (next[index] !== now[index]) return next[index] > now[index];
+    }
+    return false;
+  }
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; }
+    catch (_) {
+      try {
+        const field = document.createElement('textarea'); field.value = text; field.style.cssText = 'position:fixed;left:-9999px;top:0;';
+        document.body.appendChild(field); field.focus(); field.select();
+        const copied = document.execCommand('copy'); field.remove(); return copied;
+      } catch (_) { return false; }
+    }
+  }
+  async function copyFeedbackReport(notify = true) {
+    const copied = await copyText(feedbackReportText());
+    if (notify) status(copied ? '反馈日志已复制；请先检查内容，再粘贴到问题反馈中。'
+      : '未能自动复制反馈日志，请使用“导出反馈日志”下载文件。');
+    return copied;
+  }
+  function downloadFeedbackReport() {
+    const url = URL.createObjectURL(new Blob([feedbackReportText()], {type: 'application/json'}));
+    const link = document.createElement('a'); link.href = url;
+    link.download = CHANNEL.shortName + '反馈日志-' + Date.now() + '.json';
+    link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    status('反馈日志已导出；文件只在本机生成，未自动上传。');
+  }
+  async function openFeedbackIssue() {
+    const copied = await copyFeedbackReport(false);
+    const url = new URL(FEEDBACK_ISSUE_URL);
+    url.searchParams.set('title', '[反馈] v' + VERSION + ' · ' + CHANNEL.shortName + ' · 请填写问题概述');
+    url.searchParams.set('body', '## 问题描述\n\n\n## 复现步骤\n1. \n2. \n3. \n\n## 反馈日志\n\n'
+      + (copied ? '日志已复制到剪贴板，请在这里粘贴（Ctrl+V）。' : '自动复制失败，请回到面板使用“导出反馈日志”后附加文件。')
+      + '\n\n## 环境\n- 脚本版本：v' + VERSION + '\n- 渠道：' + CHANNEL.name + '\n- 浏览器：' + browserDescription());
+    try { GM_openInTab(url.href, {active: true, insert: true, setParent: true}); }
+    catch (_) { window.open(url.href, '_blank', 'noopener,noreferrer'); }
+    status(copied ? '反馈日志已复制；请在打开的 GitHub 页面粘贴并补充复现步骤。'
+      : '已打开问题反馈页；请使用“导出反馈日志”附加反馈文件。');
+  }
+  function renderUpdateButton() {
+    if (!updateButton) return;
+    updateButton.textContent = latestVersion ? '更新至 ' + latestVersion : '检查更新';
+    updateButton.onclick = () => latestVersion ? openUpdatePage() : checkForUpdate(true);
+  }
+  function openUpdatePage() {
+    try { GM_openInTab(latestVersion ? UPDATE_DOWNLOAD_URL : UPDATE_PAGE_URL, {active: true, insert: true, setParent: true}); }
+    catch (_) { window.open(latestVersion ? UPDATE_DOWNLOAD_URL : UPDATE_PAGE_URL, '_blank', 'noopener,noreferrer'); }
+  }
+  function checkForUpdate(manual = false) {
+    if (updateCheckActive) {
+      if (manual) status('正在检查更新，请稍候…');
+      return;
+    }
+    updateCheckActive = true;
+    if (manual) status('正在检查脚本更新…');
+    let settled = false;
+    const finish = (text, level = 'warning') => {
+      if (settled) return; settled = true; updateCheckActive = false;
+      if (manual) status(text);
+      feedbackLog.add(level, text, {stage: 'update_check'});
+    };
+    try {
+      GM_xmlhttpRequest({method: 'GET', url: UPDATE_META_URL, timeout: 15000, anonymous: true,
+        headers: {Accept: 'application/vnd.github+json'},
+        onload: response => {
+          try {
+            if (response.status !== 200) return finish('检查更新失败：GitHub 返回 HTTP ' + response.status, 'warning');
+            const data = JSON.parse(response.responseText), tag = String(data.tag_name || '');
+            GM_setValue(UPDATE_CHECK_KEY, {checkedAt: Date.now(), latest: tag});
+            if (versionIsNewer(tag, VERSION)) {
+              latestVersion = tag; renderUpdateButton();
+              finish('发现新版本 ' + tag + '，可点击“更新至 ' + tag + '”打开安装页。', 'success');
+            } else {
+              latestVersion = ''; renderUpdateButton();
+              finish('已是最新版本 v' + VERSION + '。', 'success');
+            }
+          } catch (_) { finish('检查更新失败：返回内容无法解析。', 'warning'); }
+        },
+        ontimeout: () => finish('检查更新超时，请稍后重试。', 'warning'),
+        onerror: () => finish('检查更新失败：无法连接 GitHub。', 'warning')
+      });
+    } catch (_) { finish('检查更新未能启动。', 'warning'); }
+  }
+  function scheduleUpdateCheck() {
+    if (CALLBACK_CHANNEL || location.hostname !== 'web.sanguosha.com') return;
+    let saved = null;
+    try { saved = GM_getValue(UPDATE_CHECK_KEY, null); } catch (_) {}
+    if (saved && versionIsNewer(saved.latest, VERSION)) {
+      latestVersion = String(saved.latest); renderUpdateButton();
+    }
+    if (!saved || !Number.isFinite(Number(saved.checkedAt)) || Date.now() - Number(saved.checkedAt) > 24 * 60 * 60 * 1000) {
+      setTimeout(() => checkForUpdate(false), 7000);
+    }
   }
   function cleanup() {
     for (const key of GM_listValues()) {
@@ -2385,7 +2716,7 @@ const ChannelCore = (() => {
   let gameAccountSyncTimer = 0, gameAccountSyncUntil = 0;
   function syncGameAccount() {
     const id = currentProfileId || expectedProfileId;
-    if (!accounts || !id || !/^\/(?:x|10|10th|login)\/pc\//.test(location.pathname)) return true;
+    if (!accounts || !id || !GAME_ROUTE_PATTERN.test(location.pathname)) return true;
     const identity = readGameIdentity();
     if (!identity) return false;
     if (accountPhase === 'loading' && (identity.roleId || identity.roleName || identity.serverId)) {
@@ -2407,7 +2738,7 @@ const ChannelCore = (() => {
     return !!(updated?.serverId && updated?.roleName && updated?.roleId);
   }
   function scheduleGameAccountSync(delay = 2000) {
-    if (!/^\/(?:x|10|10th|login)\/pc\//.test(location.pathname)) return;
+    if (!GAME_ROUTE_PATTERN.test(location.pathname)) return;
     if (!gameAccountSyncUntil) gameAccountSyncUntil = Date.now() + 240000;
     if (gameAccountSyncTimer) return;
     const tick = () => {
@@ -3221,7 +3552,7 @@ const ChannelCore = (() => {
   function panel(callbackOnly = false) {
     const host = document.createElement('div');
     host.id = 'sgs-channel-login-panel';
-    host.style.cssText = 'position:fixed;right:16px;top:16px;width:336px;max-width:calc(100vw - 24px);z-index:2147483647;';
+    host.style.cssText = 'position:fixed;right:16px;top:16px;width:' + EXPANDED_PANEL_WIDTH + 'px;max-width:calc(100vw - 24px);z-index:2147483647;';
     if (!callbackOnly) panelHost = host;
     const root = host.attachShadow({mode: 'closed'});
     const style = document.createElement('style');
@@ -3255,6 +3586,12 @@ const ChannelCore = (() => {
           -webkit-backdrop-filter:blur(28px) saturate(180%);backdrop-filter:blur(28px) saturate(180%);
           -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
         }
+        .box.is-collapsed{border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.30),0 1px 4px rgba(0,0,0,.16)}
+        .box.is-collapsed header{padding:7px 9px;gap:6px;border-bottom:0}
+        .box.is-collapsed .brand{font-size:12px;line-height:1.3;letter-spacing:-.01em}
+        .box.is-collapsed .header-actions{gap:4px}
+        .box.is-collapsed .header-actions button{min-height:26px;padding:3px 8px;font-size:10px;border-radius:9px}
+        .box.is-collapsed .panel-hide{display:none}
         header{display:flex;align-items:center;gap:10px;padding:15px 17px;border-bottom:1px solid var(--separator);background:linear-gradient(180deg,rgba(255,255,255,.05),transparent)}
         .brand{flex:1;min-width:0;font-size:15px;font-weight:650;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
         .header-actions{display:flex;gap:6px}.header-actions button{padding:6px 9px;min-height:30px;font-size:11px;font-weight:600;background:var(--field);color:var(--text-secondary);border-color:var(--separator);box-shadow:none}
@@ -3267,6 +3604,11 @@ const ChannelCore = (() => {
         button:disabled{opacity:.38;cursor:default;transform:none!important}
         .minor{min-height:32px;padding:6px 10px;font-size:11px;font-weight:550;background:var(--field);color:var(--text-secondary);border-color:var(--separator);box-shadow:none}.minor:hover{background:var(--field-strong);color:var(--text)}
         .danger{color:var(--danger)}
+        .panel-tabs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;margin:0 0 12px;padding:4px;border:1px solid var(--separator);border-radius:12px;background:var(--field)}
+        .panel-tabs button{min-height:32px;padding:5px 8px;border:0;border-radius:8px;background:transparent;color:var(--text-tertiary);font-size:11px;font-weight:650;box-shadow:none}
+        .panel-tabs button:hover{background:var(--field-strong);color:var(--text-secondary)}
+        .panel-tabs button[aria-selected="true"]{background:var(--panel-solid);color:var(--text);box-shadow:0 1px 4px rgba(0,0,0,.18)}
+        .panel-view[hidden]{display:none}
         .status-card{position:sticky;top:0;z-index:6;margin:0 0 12px;padding:11px 13px;border:1px solid var(--separator);border-radius:14px;background:var(--panel-solid);box-shadow:0 8px 18px rgba(0,0,0,.14)}
         .status-caption{display:flex;align-items:center;gap:7px;font-size:10px;font-weight:700;letter-spacing:.045em;text-transform:uppercase;color:var(--text-tertiary)}
         .status-caption:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--text-tertiary);box-shadow:0 0 0 3px rgba(142,142,147,.12)}
@@ -3306,10 +3648,10 @@ const ChannelCore = (() => {
         .account-info{display:block;margin:8px 0;white-space:pre-line;overflow-wrap:anywhere;font-size:11px;line-height:1.65;color:var(--text-secondary)}
         .accounts{display:block;width:100%;height:136px;overflow:auto;margin:8px 0;background:var(--field-strong);color:var(--text);border:1px solid var(--separator);border-radius:var(--control-radius);font:12px/1.55 var(--font)}
         .accounts option{padding:6px 8px;border-radius:8px}.accounts option:checked{background:var(--accent);color:#fff}.account-editor input{margin-top:7px;font-size:12px}.account-editor button{margin:7px 5px 0 0}
-        .record-count{display:inline-flex;align-items:center;justify-content:center;height:20px;margin-left:2px;padding:0 7px;border-radius:99px;background:var(--field-strong);color:var(--text-tertiary);font-size:9px;font-weight:550;line-height:20px;font-variant-numeric:tabular-nums;box-sizing:border-box;flex:0 0 auto}.record-tools{display:flex;gap:6px;padding:0 11px 9px}.record-tools button{flex:1;font-size:10px;padding:5px 6px}.record-list{list-style:none;padding:0 11px 0 20px;margin:0 0 11px;max-height:220px;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--field-strong) transparent}
+        .record-count{display:inline-flex;align-items:center;justify-content:center;height:20px;margin-left:2px;padding:0 7px;border-radius:99px;background:var(--field-strong);color:var(--text-tertiary);font-size:9px;font-weight:550;line-height:20px;font-variant-numeric:tabular-nums;box-sizing:border-box;flex:0 0 auto}.record-tools{display:flex;flex-wrap:wrap;gap:6px;padding:0 11px 9px}.record-tools button{flex:1 1 calc(50% - 6px);font-size:10px;padding:5px 6px}.record-list{list-style:none;padding:0 11px 0 20px;margin:0 0 11px;max-height:220px;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--field-strong) transparent}
         .record-item{position:relative;border-left:1px solid var(--separator);padding:0 8px 14px 13px;margin:0}.record-item:before{content:"";position:absolute;left:-4px;top:7px;width:7px;height:7px;border-radius:50%;background:var(--text-tertiary);border:2px solid var(--panel-solid)}.record-item:last-child{padding-bottom:0;border-left-color:transparent}.record-item.error:before{background:var(--danger)}.record-item.warning:before{background:var(--warning)}.record-item.success:before{background:var(--success)}.record-item.is-current.progress:before{background:var(--accent);box-shadow:0 0 0 3px rgba(10,132,255,.16)}
         .record-meta{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:var(--text-tertiary);font-variant-numeric:tabular-nums}.record-badge{font-size:9px;color:var(--text-tertiary)}.record-item.is-current .record-badge{color:var(--accent)}.record-item.error .record-badge,.record-item.error .record-message{color:var(--danger)}.record-item.success .record-badge{color:var(--success)}.record-message{margin-top:3px;font-size:11px;line-height:1.7;color:var(--text-secondary);overflow-wrap:anywhere}.record-item.is-current .record-message{color:var(--text)}.record-empty{padding:9px 0 13px;font-size:11px;line-height:1.7;color:var(--text-tertiary)}
-        .panel-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:12px}.panel-footer small{color:var(--text-tertiary);font-size:10px}.panel-footer button{font-size:10px}.manual-entry{margin:10px 0}.manual-entry small{display:block;margin-bottom:7px;font-size:11px;line-height:1.6;color:var(--text-secondary)}.manual-entry button{margin-top:7px}.cancel-login{width:100%;margin-top:8px}
+        .panel-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:12px}.panel-footer small{color:var(--text-tertiary);font-size:10px}.panel-footer button{font-size:10px}.panel-footer-actions{display:flex;gap:5px;flex:0 0 auto}.manual-entry{margin:10px 0}.manual-entry small{display:block;margin-bottom:7px;font-size:11px;line-height:1.6;color:var(--text-secondary)}.manual-entry button{margin-top:7px}.cancel-login{width:100%;margin-top:8px}
         .credit-note{margin:10px 0 0;padding:9px 11px;border:1px solid var(--separator);border-radius:12px;background:var(--field);font-size:10px;line-height:1.75;color:var(--text-tertiary);overflow-wrap:anywhere}.credit-note strong{display:block;margin-bottom:2px;font-weight:650;color:var(--text-secondary)}.credit-note a{color:var(--accent);text-decoration:none}.credit-note a:hover{text-decoration:underline}
         .security-note{margin-top:10px;border:1px solid var(--separator);border-radius:14px;background:var(--field);overflow:hidden}.security-note summary{padding:9px 11px;font-size:10px;font-weight:650;color:var(--text-secondary)}.security-note .security-body{padding:0 11px 11px;font-size:10px;line-height:1.7;color:var(--text-tertiary)}.security-note pre{margin:7px 0 0;padding:8px;border-radius:9px;background:rgba(0,0,0,.18);color:var(--text-secondary);font:9px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
         @media (prefers-reduced-transparency:reduce){.box{background:var(--panel-solid);-webkit-backdrop-filter:none;backdrop-filter:none}}
@@ -3330,6 +3672,7 @@ const ChannelCore = (() => {
     headerActions.appendChild(collapse); box.appendChild(content);
     if (!callbackOnly) {
       const hide = document.createElement('button'); hide.className = 'minor'; hide.textContent = '隐藏';
+      hide.classList.add('panel-hide');
       hide.title = '可从油猴菜单的“' + CHANNEL.shortName + '：显示登录面板”重新打开';
       hide.onclick = () => { setPanelVisible(false); savePreferences({hidden: true}); };
       headerActions.appendChild(hide);
@@ -3362,7 +3705,30 @@ const ChannelCore = (() => {
     statusCaption = document.createElement('div'); statusCaption.className = 'status-caption'; statusCard.appendChild(statusCaption);
     statusNode = document.createElement('p'); statusNode.setAttribute('role', 'status'); statusNode.setAttribute('aria-live', 'polite'); statusCard.appendChild(statusNode); renderStatus();
     if (!callbackOnly) {
-      const channelCard = document.createElement('div'); channelCard.className = 'channel-card'; content.appendChild(channelCard);
+      const tabs = document.createElement('div'); tabs.className = 'panel-tabs'; tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', '登录器菜单');
+      const loginView = document.createElement('section'); loginView.className = 'panel-view'; loginView.id = 'sgs-panel-view-login'; loginView.setAttribute('role', 'tabpanel');
+      const accountView = document.createElement('section'); accountView.className = 'panel-view'; accountView.id = 'sgs-panel-view-account'; accountView.setAttribute('role', 'tabpanel');
+      const diagnosticsView = document.createElement('section'); diagnosticsView.className = 'panel-view'; diagnosticsView.id = 'sgs-panel-view-diagnostics'; diagnosticsView.setAttribute('role', 'tabpanel');
+      const views = {login: loginView, account: accountView, diagnostics: diagnosticsView};
+      const tabButtons = new Map();
+      const switchView = name => {
+        for (const [key, view] of Object.entries(views)) view.hidden = key !== name;
+        content.scrollTop = 0;
+        for (const [key, button] of tabButtons) {
+          const selected = key === name;
+          button.setAttribute('aria-selected', String(selected));
+          button.tabIndex = selected ? 0 : -1;
+        }
+      };
+      for (const [name, label] of [['login', '登录'], ['account', '账号'], ['diagnostics', '诊断']]) {
+        const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
+        button.id = 'sgs-panel-tab-' + name; button.setAttribute('role', 'tab');
+        button.setAttribute('aria-controls', views[name].id); views[name].setAttribute('aria-labelledby', button.id);
+        if (name === 'diagnostics') diagnosticsTabButton = button;
+        button.onclick = () => switchView(name); tabButtons.set(name, button); tabs.appendChild(button);
+      }
+      content.append(tabs, loginView, accountView, diagnosticsView); switchView('login');
+      const channelCard = document.createElement('div'); channelCard.className = 'channel-card'; loginView.appendChild(channelCard);
       const channelHead = document.createElement('div'); channelHead.className = 'channel-head'; channelCard.appendChild(channelHead);
       const channelLabel = document.createElement('label'); channelLabel.htmlFor = 'sgs-channel-select'; channelLabel.textContent = '登录渠道'; channelHead.appendChild(channelLabel);
       channelBadge = document.createElement('span'); channelBadge.className = 'channel-badge ' + CHANNEL.capability;
@@ -3412,8 +3778,8 @@ const ChannelCore = (() => {
           : '已关闭：本次不新增或更新任何本地账号与登录状态。';
       };
       saveLoginToggle.onchange = () => { saveLoginInfo = saveLoginToggle.checked; syncSaveLogin(); };
-      syncSaveLogin(); content.appendChild(saveLoginRow);
-      loginOptionsNode = document.createElement('div'); loginOptionsNode.className = 'login-grid'; content.appendChild(loginOptionsNode);
+      syncSaveLogin(); loginView.appendChild(saveLoginRow);
+      loginOptionsNode = document.createElement('div'); loginOptionsNode.className = 'login-grid'; loginView.appendChild(loginOptionsNode);
       const options = CHANNEL.loginOptions.length ? CHANNEL.loginOptions
         : [{id: 'unavailable', label: '当前渠道暂不可用', kind: 'disabled', hint: CHANNEL.reason}];
       for (const option of options) {
@@ -3432,11 +3798,11 @@ const ChannelCore = (() => {
       loginHint.textContent = CHANNEL.loginOptions.length
         ? '' : '当前渠道没有可核实的浏览器登录入口；不会伪造票据或设备签名。';
       loginHint.hidden = CHANNEL.loginOptions.length > 0;
-      content.appendChild(loginHint);
-      qrNode = document.createElement('div'); qrNode.className = 'qr-panel'; qrNode.hidden = true; content.appendChild(qrNode);
+      loginView.appendChild(loginHint);
+      qrNode = document.createElement('div'); qrNode.className = 'qr-panel'; qrNode.hidden = true; loginView.appendChild(qrNode);
       qrImage = document.createElement('img'); qrImage.alt = CHANNEL.name + '官方登录二维码'; qrImage.hidden = true; qrNode.appendChild(qrImage);
       qrCaption = document.createElement('div'); qrCaption.className = 'qr-caption'; qrNode.appendChild(qrCaption);
-      directNote = document.createElement('small'); directNote.className = 'direct-note'; content.appendChild(directNote);
+      directNote = document.createElement('small'); directNote.className = 'direct-note'; loginView.appendChild(directNote);
       directNote.textContent = hasBrowserLogin
         ? '扫码二维码由当前渠道官方接口即时生成；账号密码、短信验证码和网页扫码只在官方弹窗内完成。脚本不读取输入，是否保存可恢复登录状态由上方开关决定。'
         : '扫码二维码由当前渠道官方接口即时生成，只在本次登录面板内显示；脚本不读取账号密码、验证码或二维码内容。';
@@ -3446,9 +3812,9 @@ const ChannelCore = (() => {
       retryLoginButton.onclick = () => {
         if (!duplicateRetry) { retryLoginButton.hidden = true; return status('请先选择一种官方登录方式。'); }
         return begin(duplicateRetry.id, duplicateRetry.loginMethod, duplicateRetry.optionId || '');
-      }; content.appendChild(retryLoginButton);
-      currentAccountNode = document.createElement('small'); currentAccountNode.className = 'account-info'; content.appendChild(currentAccountNode);
-      const manager = document.createElement('details'); manager.className = 'section-card'; manager.open = false;
+      }; loginView.appendChild(retryLoginButton);
+      currentAccountNode = document.createElement('small'); currentAccountNode.className = 'account-info'; accountView.appendChild(currentAccountNode);
+      const manager = document.createElement('details'); manager.className = 'section-card'; manager.open = true;
       const managerTitle = document.createElement('summary'); manager.appendChild(managerTitle);
       const managerLabel = document.createElement('span'); managerLabel.className = 'summary-title'; managerLabel.textContent = '账号管理'; managerTitle.appendChild(managerLabel);
       accountCountNode = document.createElement('span'); accountCountNode.className = 'record-count'; managerTitle.appendChild(accountCountNode);
@@ -3534,7 +3900,7 @@ const ChannelCore = (() => {
       }; accountEditor.appendChild(save);
       const cancelEdit = document.createElement('button'); cancelEdit.className = 'minor'; cancelEdit.textContent = '取消修改';
       cancelEdit.onclick = () => { editingProfileId = null; renderAccounts(true); }; accountEditor.appendChild(cancelEdit);
-      managerBody.appendChild(accountEditor); content.appendChild(manager);
+      managerBody.appendChild(accountEditor); accountView.appendChild(manager);
       cancelButton = document.createElement('button'); cancelButton.textContent = '取消当前登录'; cancelButton.className = 'minor cancel-login'; cancelButton.hidden = true;
       cancelButton.onclick = () => {
         if (!active) return;
@@ -3542,32 +3908,29 @@ const ChannelCore = (() => {
         active.controller.abort();
         closeLoginPopup(active);
         if (direct) { try { directApi()?.cancel(active?.clientToken); } catch (_) {} }
-      }; content.appendChild(cancelButton);
+      }; loginView.appendChild(cancelButton);
       importArea = document.createElement('details'); importArea.className = 'manual-entry'; importArea.hidden = true;
       const summary = document.createElement('summary'); summary.textContent = '授权后卡在 404／空白页？'; importArea.appendChild(summary);
       const hint = document.createElement('small'); hint.textContent = '复制授权后地址栏的完整地址，粘贴到这里继续。'; importArea.appendChild(hint);
       const input = document.createElement('input'); input.type = 'password'; input.autocomplete = 'off'; input.placeholder = '粘贴' + CHANNEL.name + '授权回调地址'; importArea.appendChild(input);
       const submit = document.createElement('button'); submit.className = 'minor'; submit.textContent = '继续登录';
-      submit.onclick = () => { const raw = input.value.trim(); input.value = ''; manual(raw); }; importArea.appendChild(submit); content.appendChild(importArea);
-      const diagnostics = document.createElement('details'); diagnostics.className = 'section-card'; historyDetails = diagnostics;
+      submit.onclick = () => { const raw = input.value.trim(); input.value = ''; manual(raw); }; importArea.appendChild(submit); loginView.appendChild(importArea);
+      const diagnostics = document.createElement('details'); diagnostics.className = 'section-card'; diagnostics.open = true; historyDetails = diagnostics;
       const label = document.createElement('summary'); diagnostics.appendChild(label);
       const recordTitle = document.createElement('span'); recordTitle.textContent = '运行记录'; label.appendChild(recordTitle);
       historyCount = document.createElement('span'); historyCount.className = 'record-count'; label.appendChild(historyCount);
       const recordTools = document.createElement('div'); recordTools.className = 'record-tools'; diagnostics.appendChild(recordTools);
       historyFilterButton = document.createElement('button'); historyFilterButton.className = 'minor';
       historyFilterButton.onclick = () => { errorsOnly = !errorsOnly; renderHistory(); }; recordTools.appendChild(historyFilterButton);
-      historyClearButton = document.createElement('button'); historyClearButton.className = 'minor'; historyClearButton.textContent = '清空记录';
-      historyClearButton.title = '只清空当前页面的运行记录，不影响账号或登录';
-      historyClearButton.onclick = () => { log.length = 0; errorsOnly = false; renderHistory(); }; recordTools.appendChild(historyClearButton);
+      historyClearButton = document.createElement('button'); historyClearButton.className = 'minor'; historyClearButton.textContent = '清空日志';
+      historyClearButton.title = '清空当前页记录与本机反馈日志，不影响账号或登录';
+      historyClearButton.onclick = () => { log.length = 0; errorsOnly = false; feedbackLog.clear(); renderHistory(); }; recordTools.appendChild(historyClearButton);
       logNode = document.createElement('ol'); logNode.className = 'record-list'; logNode.setAttribute('aria-label', '运行记录，最新在前');
-      const download = document.createElement('button'); download.className = 'minor'; download.textContent = '导出诊断';
-      download.onclick = () => {
-        const report = {version: VERSION, channel: {id: CHANNEL.id, name: CHANNEL.name, capability: CHANNEL.capability,
-          platformId: CHANNEL.platformId, gameChannelId: CHANNEL.gameChannelId}, scope: '阶段提示；不包含账号与会话值', events: log};
-        const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], {type: 'application/json'}));
-        const link = document.createElement('a'); link.href = url; link.download = CHANNEL.shortName + '浏览器诊断-' + Date.now() + '.json';
-        link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      }; recordTools.appendChild(download); diagnostics.appendChild(logNode); content.appendChild(diagnostics); renderHistory();
+      const copyFeedback = document.createElement('button'); copyFeedback.className = 'minor'; copyFeedback.textContent = '复制反馈日志';
+      copyFeedback.onclick = () => copyFeedbackReport(); recordTools.appendChild(copyFeedback);
+      const download = document.createElement('button'); download.className = 'minor'; download.textContent = '导出反馈日志';
+      download.onclick = () => downloadFeedbackReport(); recordTools.appendChild(download);
+      diagnostics.appendChild(logNode); diagnosticsView.appendChild(diagnostics); renderHistory();
       const security = document.createElement('details'); security.className = 'security-note';
       const securityTitle = document.createElement('summary'); securityTitle.textContent = '安全声明：不会读取账号密码';
       security.appendChild(securityTitle);
@@ -3575,16 +3938,21 @@ const ChannelCore = (() => {
       securityBody.textContent = '账号密码和短信验证码只在渠道官方页面输入，脚本不监听输入框、不读取剪贴板，也绝不保存密码或验证码。开启“保存本次登录信息”时，会按账号与渠道保存在本机可恢复的官方登录状态（可能包含渠道票据），用于账号管理直达游戏；关闭时不新增或更新账号与登录状态。授权 code 只在本机临时存储中等待一次兑换，读取后立即删除；游戏启动票据仅在当前标签页短暂保留并一次性消费。移除账号会同时清除该账号名下所有已保存登录状态。';
       const securityCode = document.createElement('pre');
       securityCode.textContent = '// 只有开启保存且已绑定 profileId 时才写会话\nif (saveSession) GM_setValue(sessionStoreKey(profileId, provider), record);\n// 授权回调读取后立即删除\nGM_deleteValue(resultKey(context.state));\n// 移除账号时清理它名下全部渠道会话\nforgetSessions(profileId);\n// 启动票据一次性消费\nsessionStorage.removeItem(LAUNCH);';
-      securityBody.appendChild(securityCode); security.appendChild(securityBody); content.appendChild(security);
+      securityBody.appendChild(securityCode); security.appendChild(securityBody); diagnosticsView.appendChild(security);
       const credit = document.createElement('p'); credit.className = 'credit-note';
       const creditLead = document.createElement('strong'); creditLead.textContent = '第一作者与源码来源'; credit.appendChild(creditLead);
       credit.appendChild(document.createTextNode('谨向 @暗鹊 致以诚挚感谢。本项目基于 @暗鹊 创作的《统一登录器》源码整理、维护与扩展，并非 @暗鹊 官方发布。'));
       const sourceLink = document.createElement('a'); sourceLink.href = 'https://github.com/Clarrycy/jinnangmiaoji/blob/main/jinnangdai/payload/unified-login.user.js';
       sourceLink.target = '_blank'; sourceLink.rel = 'noopener noreferrer'; sourceLink.textContent = '查看原始源码'; credit.appendChild(sourceLink);
-      credit.appendChild(document.createTextNode('。')); content.appendChild(credit);
+      credit.appendChild(document.createTextNode('。')); diagnosticsView.appendChild(credit);
       const footer = document.createElement('div'); footer.className = 'panel-footer'; content.appendChild(footer);
       const note = document.createElement('small'); note.textContent = 'v' + VERSION + ' · 多渠道本地版 · ' + ChannelRegistry.visibleChannels().length + ' 个渠道';
-      footer.appendChild(note);
+      const footerActions = document.createElement('div'); footerActions.className = 'panel-footer-actions';
+      const feedbackButton = document.createElement('button'); feedbackButton.className = 'minor'; feedbackButton.textContent = '问题反馈';
+      feedbackButton.onclick = () => openFeedbackIssue();
+      updateButton = document.createElement('button'); updateButton.className = 'minor'; updateButton.textContent = '检查更新';
+      updateButton.onclick = () => checkForUpdate(true);
+      footerActions.append(feedbackButton, updateButton); footer.append(note, footerActions);
     }
     document.body.appendChild(host);
     if (!callbackOnly) {
@@ -3593,11 +3961,19 @@ const ChannelCore = (() => {
       if (!host.hidden && Number.isFinite(prefs.left) && Number.isFinite(prefs.top)) positionPanel(prefs.left, prefs.top);
       renderAccounts(true); updateAccountHeading(); busy(false);
       setTimeout(resumePendingAutoLogin, 0);
+      scheduleUpdateCheck();
+      watchGameLogin();
     }
   }
   GM_registerMenuCommand(CHANNEL.shortName + '：显示登录面板', () => showPanel());
   GM_registerMenuCommand(CHANNEL.shortName + '：重置面板位置', () => showPanel(true));
   GM_registerMenuCommand(CHANNEL.shortName + '：打开官网登录页', () => location.assign(LOGIN_PAGE));
+  GM_registerMenuCommand(CHANNEL.shortName + '：检查脚本更新', () => { showPanel(); checkForUpdate(true); });
+  GM_registerMenuCommand(CHANNEL.shortName + '：复制反馈日志', () => copyFeedbackReport());
+  GM_registerMenuCommand(CHANNEL.shortName + '：打开问题反馈', () => openFeedbackIssue());
+  GM_registerMenuCommand(CHANNEL.shortName + '：清空本机反馈日志', () => {
+    feedbackLog.clear(); status('本机反馈日志已清空；账号与登录记录不受影响。');
+  });
   GM_registerMenuCommand(CHANNEL.shortName + '：清除临时授权记录', () => {
     if (active) active.controller.abort();
     try { directApi()?.cancel(); } catch (_) {}
@@ -3610,7 +3986,7 @@ const ChannelCore = (() => {
 /* DIRECT-ENGINE-BEGIN */
 (() => {
   'use strict';
-  const VERSION = '1.1.4';
+  const VERSION = '1.2.0';
   const ORIGIN = 'https://web.sanguosha.com';
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
   const SESSION_KEY = 'wegame.qq.session.v1';
