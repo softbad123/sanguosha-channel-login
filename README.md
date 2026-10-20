@@ -2,12 +2,26 @@
 
 在三国杀网页版登录页提供一个统一的多渠道登录面板，把当前浏览器会话接到渠道官方的扫码、网页授权和游卡兑换链路，并在本机提供账号管理与快速直登。
 
-当前版本：`1.1`  
+当前版本：`1.1.2`
 支持渠道：小米、Vivo、OPPO、华为、哔哩哔哩、WeGame、Steam（共 7 个）  
 运行方式：Tampermonkey 用户脚本（Chrome / Edge）
 
 > 本项目是本地辅助工具，不绕过官方登录、实名、支付或风控。最终能否登录仍由渠道服务器、游卡服务器及账号状态共同决定。  
 > 截图中的账号名称、区服和记录均为演示数据。
+
+## 第一作者与源码来源
+
+- 第一作者：**@暗鹊**。
+- 原始源码：[@暗鹊《统一登录器》](https://github.com/Clarrycy/jinnangmiaoji/blob/main/jinnangdai/payload/unified-login.user.js)。
+- 本项目基于上述源码整理、维护与扩展。谨向 @暗鹊 致以诚挚感谢；本仓库并非 @暗鹊 官方发布。
+- 维护者：softbad123。修改说明、第三方来源与许可证状态见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 1.1.2 更新
+
+- 修复 WeGame 账号被错误拼接为“区服待返回 · 未打开 · 待登录”的状态显示，改为明确的登录、区服和窗口状态。
+- 进入游戏后从 `AccountInfo` 与 `UserData` 补充角色名、角色 ID、登录账号和区服。
+- 账号资料同步只在游戏页、资料不完整时短时运行，不再全页面永久轮询。
+- 在脚本元数据、登录面板、README 与许可证声明中补充第一作者 @暗鹊及固定源码链接。
 
 ## 界面预览
 
@@ -53,10 +67,10 @@
 
 1. 在 Chrome 或 Edge 中安装 [Tampermonkey](https://www.tampermonkey.net/)。
 2. 打开本项目的 [最新 Release](https://github.com/softbad123/sanguosha-channel-login/releases/latest)。
-3. 下载 `sanguosha-channel-login-v1.1.user.js`，在 Tampermonkey 中导入并启用。
+3. 下载 `sanguosha-channel-login-v1.1.2.user.js`，在 Tampermonkey 中导入并启用。
 4. 停用或删除旧的“小米服登录器”“统一登录器”以及旧版“三国杀多渠道登录”脚本，避免同页重复注入。
 5. 打开 <https://web.sanguosha.com/login/10th_client/index.html>。
-6. 页面右侧出现登录面板后，确认页脚显示 `v1.1 · 多渠道本地版 · 7 个渠道`。
+6. 页面右侧出现登录面板后，确认页脚显示 `v1.1.2 · 多渠道本地版 · 7 个渠道`。
 
 ### 方式二：从源码安装
 
@@ -125,12 +139,18 @@ Steam 登录使用 `store.steampowered.com` 官方 OAuth 页面。扫码、账�
 **华为 / 哔哩哔哩没有账号密码入口**  
 这两个渠道当前只保留经过验证的扫码或官方登录链路，不展示无法完成游戏交接的灰色按钮。
 
+**WeGame 显示“区服未记录 / 区服未同步”**
+
+这不是“登录失败”或“区服接口仍在等待”。账号刚授权时尚未进入游戏，区服会显示为未记录；游戏认证成功后，插件会从 `AccountInfo` / `UserData` 自动补充。若进入角色大厅后仍未同步，请导出诊断。旧版本显示的“区服待返回 · 未打开 · 待登录”属于三个独立状态被错误拼接，`1.1.1` 已移除这组文案。
+
 ## 开发与验证
 
 - `_direct_engine.js` 是独立登录引擎；主脚本中的内嵌引擎必须与其逐字一致。
 - `tests/_test_embedded_engine_sync.js` 同时校验内嵌一致性以及元数据、宿主、引擎三处版本号。
 - `tests/_test_login_options.js` 校验 7 个可见桥接渠道，并确认荣耀渠道不再注册。
 - `tests/_test_registry_security.js` 校验渠道域名与 `@connect` 配置一致。
+- `tests/_test_wegame_profile.js` 校验 WeGame 状态文案、区服读取和角色资料回填。
+- `tests/_test_credits.js` 校验第一作者、固定源码链接和 Apache-2.0 许可证声明。
 - 账号恢复、WeGame 竞态、Vivo / OPPO / Steam / B 站交接等均保留 Node 回归测试。
 
 运行纯 Node 回归测试：
@@ -147,4 +167,4 @@ npm test
 
 ## 许可证
 
-本项目使用 [MIT License](LICENSE) 开源。
+本项目维护者原创的修改与新增部分使用 [MIT License](LICENSE) 开源；源自 @暗鹊《统一登录器》的部分继续受 [Apache License 2.0](LICENSES/Apache-2.0.txt) 约束。再分发时请保留作者署名、固定源码链接、修改声明与 Apache-2.0 许可证副本。小米服相关参考实现的授权状态仍需单独核实，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

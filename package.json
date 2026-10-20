@@ -1,6 +1,6 @@
 {
   "name": "sanguosha-channel-login",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "private": true,
   "description": "三国杀一将成名网页版多渠道服登录器（Tampermonkey）",
   "scripts": {
@@ -9,5 +9,5 @@
   "engines": {
     "node": ">=18"
   },
-  "license": "MIT"
+  "license": "MIT AND Apache-2.0"
 }

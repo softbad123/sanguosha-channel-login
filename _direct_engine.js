@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const VERSION = '1.1';
+  const VERSION = '1.1.2';
   const ORIGIN = 'https://web.sanguosha.com';
   const SESSION_KEY = 'wegame.qq.session.v1';
   const SESSION_STORE_PREFIX = 'sgs-login-session-v3:';
@@ -160,18 +160,31 @@
     return result;
   }
   function gameAuthFields() {
-    let self = null;
-    try { self = page.AccountInfo?.Self || page.AccountInfo?.self || null; } catch (_) {}
+    let self = null, user = null;
+    try {
+      self = page.AccountInfo?.Self || page.AccountInfo?.self || null;
+      user = page.UserData?.Self || page.UserData?.self || null;
+    } catch (_) {}
+    const first = (sources, names) => {
+      for (const source of sources) {
+        if (!source || typeof source !== 'object') continue;
+        for (const name of names) {
+          const value = source[name];
+          if ((typeof value === 'string' || typeof value === 'number') && String(value).trim()) {
+            return String(value).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 256);
+          }
+        }
+      }
+      return '';
+    };
     const fields = {};
     for (const [name, value] of [
-      ['serverId', self?.SeverID || self?.ServerID],
-      ['loginAccount', self?.Account],
-      ['channelAccount', self?.ChannelAccount]
-    ]) {
-      if ((typeof value === 'string' || typeof value === 'number') && String(value).trim()) {
-        fields[name] = String(value).trim().slice(0, 256);
-      }
-    }
+      ['serverId', first([self, user], ['SeverID', 'ServerID', 'ServerId', 'serverId', 'server_id'])],
+      ['roleId', first([self, user], ['UserId', 'UserID', 'userId', 'RoleId', 'RoleID', 'roleId'])],
+      ['roleName', first([user, self], ['Nickname', 'NickName', 'nickname', 'UserName'])],
+      ['loginAccount', first([self], ['Account'])],
+      ['channelAccount', first([self], ['ChannelAccount'])]
+    ]) if (value) fields[name] = value;
     return fields;
   }
   let boundClientToken = '';

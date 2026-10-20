@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         三国杀一将成名 · 多渠道登录
 // @namespace    local.sgs.channels.browser
-// @author       softbad123
+// @author       @暗鹊（第一作者；《统一登录器》原始源码）
+// @author       softbad123（维护者）
 // @homepageURL  https://github.com/softbad123/sanguosha-channel-login
 // @supportURL   https://github.com/softbad123/sanguosha-channel-login/issues
-// @version      1.1
+// @version      1.1.2
 // @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和账号管理直达。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
 // @match        https://web.sanguosha.com/*
 // @match        https://joint.vivo.com.cn/game-subaccount-login/*
@@ -66,6 +67,14 @@
 // @connect      web-login-api.sanguosha.com
 // @connect      wwwoss.sanguosha.com
 // ==/UserScript==
+
+/*
+ * 第一作者与源码来源
+ * 本项目基于 @暗鹊 创作的《统一登录器》源码整理、维护和扩展。
+ * 原始源码：https://github.com/Clarrycy/jinnangmiaoji/blob/main/jinnangdai/payload/unified-login.user.js
+ * 谨向 @暗鹊 致以诚挚感谢。本仓库并非 @暗鹊 官方发布。
+ * 维护者：softbad123。第三方来源与许可证见 THIRD_PARTY_NOTICES.md。
+ */
 
 (() => {
   'use strict';
@@ -1807,7 +1816,7 @@ const ChannelCore = (() => {
   const LEGACY_TRANSIENT_PROFILE_KEY = CHANNEL.contextPrefix + '-transient-profile-v1';
   const LOGIN_PAGE = 'https://web.sanguosha.com/login/10th_client/index.html';
   const PENDING_ACCOUNT_KEY = 'sgs-unified-pending-account-v1';
-  const VERSION = '1.1';
+  const VERSION = '1.1.2';
   const isBrowserChannel = ChannelRegistry.isBrowser(CHANNEL);
   const hasDirectLogin = CHANNEL.loginOptions.some(option => option.kind === 'direct');
   const hasBrowserLogin = CHANNEL.loginOptions.some(option => option.kind === 'direct' && option.mode === 'browser');
@@ -1935,10 +1944,72 @@ const ChannelCore = (() => {
     return accounts.update(id, changes, false, CHANNEL.id);
   }
   function profileZone(profile) {
-    if (!profile) return '区服未标注';
+    if (!profile) return '区服未记录';
     if (profile.zoneNote) return '区服备注：' + profile.zoneNote;
     const owner = profileChannel(profile);
-    return profile.serverId ? owner.shortName + ' · 区服 ' + profile.serverId : owner.shortName + ' · 区服待游戏返回';
+    return owner.shortName + ' · ' + profileZoneSummary(profile);
+  }
+  function profileZoneSummary(profile) {
+    if (!profile) return '区服未记录';
+    if (profile.zoneNote) return '区服备注：' + profile.zoneNote;
+    if (profile.serverId) return '区服 ' + profile.serverId;
+    return profile.lastLoginAt ? '区服未同步' : '区服未记录';
+  }
+  function shortLoginTime(value) {
+    const date = new Date(Number(value));
+    if (!Number.isFinite(date.getTime())) return '';
+    const pad = number => String(number).padStart(2, '0');
+    return pad(date.getMonth() + 1) + '/' + pad(date.getDate()) + ' ' +
+      pad(date.getHours()) + ':' + pad(date.getMinutes());
+  }
+  function liveAccountLabel(phases = []) {
+    const state = new Set(phases);
+    if (state.has('connected')) return '游戏已打开';
+    if (state.has('loading')) return '正在进入游戏';
+    if (state.has('authorizing')) return '正在登录';
+    if (state.has('failed')) return '上次登录失败';
+    if (state.has('disconnected')) return '连接已断开';
+    return '';
+  }
+  function profileAccountLabel(profile, live = []) {
+    if (!profile) return '尚未登录';
+    const liveLabel = liveAccountLabel(live);
+    if (liveLabel) return liveLabel;
+    if (profile.id === (currentProfileId || expectedProfileId)) {
+      const phase = {authorizing: '正在登录', loading: '正在进入游戏', connected: '已登录',
+        failed: '登录失败', disconnected: '连接已断开'}[accountPhase];
+      if (phase) return phase;
+    }
+    if (profile.lastLoginAt) return '上次登录 ' + shortLoginTime(profile.lastLoginAt);
+    if (profile.lastAuthorizedAt) return '已授权';
+    return '尚未登录';
+  }
+  function gameField(sources, names, max = 256) {
+    for (const source of sources) {
+      if (!source || typeof source !== 'object') continue;
+      for (const name of names) {
+        const value = source[name];
+        if ((typeof value === 'string' || typeof value === 'number') && String(value).trim()) {
+          return String(value).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, max);
+        }
+      }
+    }
+    return '';
+  }
+  function readGameIdentity() {
+    let self, user;
+    try {
+      self = unsafeWindow.AccountInfo?.Self || unsafeWindow.AccountInfo?.self || null;
+      user = unsafeWindow.UserData?.Self || unsafeWindow.UserData?.self || null;
+    } catch (_) { return null; }
+    if (!self && !user) return null;
+    return {
+      serverId: gameField([self, user], ['SeverID', 'ServerID', 'ServerId', 'serverId', 'server_id'], 64),
+      roleId: gameField([self, user], ['UserId', 'UserID', 'userId', 'RoleId', 'RoleID', 'roleId'], 80),
+      roleName: gameField([user, self], ['Nickname', 'NickName', 'nickname', 'UserName'], 120),
+      loginAccount: gameField([self], ['Account'], 256),
+      channelAccount: gameField([self], ['ChannelAccount'], 256)
+    };
   }
   function switchChannel(id, options = {}) {
     const next = ChannelRegistry.get(id);
@@ -2194,6 +2265,8 @@ const ChannelCore = (() => {
           const changes = {
             lastLoginAt: Date.now(),
             ...(typeof event.serverId === 'string' && event.serverId ? {serverId: event.serverId} : {}),
+            ...(typeof event.roleName === 'string' && event.roleName ? {roleName: event.roleName} : {}),
+            ...(typeof event.roleId === 'string' && event.roleId ? {roleId: event.roleId} : {}),
             ...(typeof event.loginAccount === 'string' && event.loginAccount ? {loginAccount: event.loginAccount} : {}),
             ...(typeof event.channelAccount === 'string' && event.channelAccount ? {channelAccount: event.channelAccount} : {})
           };
@@ -2201,6 +2274,7 @@ const ChannelCore = (() => {
             accounts.update(profile.id, changes, false, profile.channelId);
             selectProfile(accounts.get(profile.id, profile.channelId));
           } else updateTransientProfile(changes);
+          scheduleGameAccountSync(250);
           heartbeat(); updateAccountHeading(); renderAccounts();
           status(CHANNEL.shortName + '登录票据已交给游戏，'
             + (saveLoginInfoEnabled() && !profile.transient
@@ -2295,8 +2369,10 @@ const ChannelCore = (() => {
   function updateAccountHeading() {
     if (!accounts) return;
     const profile = profileById(currentProfileId || expectedProfileId);
+    const prefix = accountPhase === 'connected' ? '当前账号：'
+      : ['authorizing', 'loading'].includes(accountPhase) ? '正在登录：' : '已选账号：';
     if (currentAccountNode) currentAccountNode.textContent = profile
-      ? (accountPhase === 'connected' ? '当前账号：' : '待登录账号：') + accounts.label(profile) : '当前窗口未绑定账号';
+      ? prefix + accounts.label(profile) : '当前窗口未绑定账号';
     if (profile) {
       document.title = '[' + CHANNEL.shortName + ' · ' + accounts.label(profile).slice(0, 24) + '] 三国杀一将成名';
       if (!/^\/10\/pc\//.test(location.pathname)) { try { window.name = profileName(profile); } catch (_) {} }
@@ -2305,35 +2381,39 @@ const ChannelCore = (() => {
       if (!/^\/10\/pc\//.test(location.pathname)) { try { window.name = ownerName; } catch (_) {} }
     }
   }
+  let gameAccountSyncTimer = 0, gameAccountSyncUntil = 0;
   function syncGameAccount() {
     const id = currentProfileId || expectedProfileId;
-    if (!accounts || !id || !/^\/(?:x|10|10th|login)\/pc\//.test(location.pathname)) return;
-    let self, user;
-    try {
-      self = unsafeWindow.AccountInfo?.Self || unsafeWindow.AccountInfo?.self || null;
-      user = unsafeWindow.UserData?.Self || null;
-    } catch (_) { return; }
-    if (!self && !user) return;
+    if (!accounts || !id || !/^\/(?:x|10|10th|login)\/pc\//.test(location.pathname)) return true;
+    const identity = readGameIdentity();
+    if (!identity) return false;
     const profile = profileById(id, CHANNEL.id);
-    if (!profile) return;
+    if (!profile) return true;
     const changes = {};
-    const set = (field, value, max = 120) => {
-      if ((typeof value !== 'string' && typeof value !== 'number') || !String(value).trim()) return;
-      const clean = String(value).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, max);
-      if (clean && profile[field] !== clean) changes[field] = clean;
-    };
-    set('serverId', self?.SeverID || self?.ServerID || self?.server_id, 64);
-    set('roleId', self?.UserId || self?.UserID, 80);
-    set('roleName', user?.Nickname || user?.NickName || self?.UserName, 120);
-    set('loginAccount', self?.Account, 256);
-    set('channelAccount', self?.ChannelAccount, 256);
-    if (!Object.keys(changes).length) return;
+    for (const field of ['serverId', 'roleId', 'roleName', 'loginAccount', 'channelAccount']) {
+      if (identity[field] && profile[field] !== identity[field]) changes[field] = identity[field];
+    }
+    if (!Object.keys(changes).length) return !!(profile.serverId && profile.roleName && profile.roleId);
     let updated = null;
     if (saveLoginInfoEnabled() && !transientProfileMatches(id, CHANNEL.id)) {
       updated = accounts.update(id, changes, false, CHANNEL.id);
-    } else updateTransientProfile(changes);
+    } else updated = updateTransientProfile(changes);
     if (updated && (!selectedProfileId || selectedProfileChannelId === CHANNEL.id)) selectProfile(updated);
     updateAccountHeading(); renderAccounts();
+    return !!(updated?.serverId && updated?.roleName && updated?.roleId);
+  }
+  function scheduleGameAccountSync(delay = 2000) {
+    if (!/^\/(?:x|10|10th|login)\/pc\//.test(location.pathname)) return;
+    if (!gameAccountSyncUntil) gameAccountSyncUntil = Date.now() + 120000;
+    if (gameAccountSyncTimer) return;
+    const tick = () => {
+      gameAccountSyncTimer = 0;
+      if (syncGameAccount() || Date.now() >= gameAccountSyncUntil) {
+        gameAccountSyncUntil = 0; return;
+      }
+      gameAccountSyncTimer = setTimeout(tick, 2000);
+    };
+    gameAccountSyncTimer = setTimeout(tick, delay);
   }
   function findOwnedWindow(profile) {
     const cached = linkedWindows.get(profile.id);
@@ -2560,9 +2640,9 @@ const ChannelCore = (() => {
       for (const {profile, live} of items) {
         const ref = accounts.ref(profile); if (!ref) continue;
         const option = document.createElement('option'); option.value = ref;
-        const state = live.includes('connected') ? '游戏已打开' : live.includes('disconnected') ? '连接已断开' : live.length ? '待登录' : '未打开';
+        const state = profileAccountLabel(profile, live);
         const role = profile.roleName && profile.roleName !== accounts.label(profile) ? ' · ' + profile.roleName : '';
-        const zone = profile.serverId ? ' · 区服 ' + profile.serverId : ' · 区服待返回';
+        const zone = ' · ' + profileZoneSummary(profile);
         option.textContent = accounts.label(profile) + role + zone + ' · ' + state;
         option.selected = selected?.profile.id === profile.id && selected?.profile.channelId === profile.channelId;
         group.appendChild(option); profileChoices.set(ref, {id: profile.id, channelId: profile.channelId});
@@ -2581,9 +2661,9 @@ const ChannelCore = (() => {
       '游戏账号标识：' + profile.id,
       '游戏接入账号（account）：' + (profile.loginAccount || '尚未读取，请用新版重新授权一次'),
       owner.name + '游戏昵称：' + (profile.nickname || '未返回'),
-      '角色名：' + (profile.roleName || '等待游戏返回'),
-      '游戏用户 ID：' + (profile.roleId || '等待游戏返回'),
-      '区服：' + (profile.serverId || '等待游戏返回'),
+      '角色名：' + (profile.roleName || '尚未同步，进入游戏大厅后自动补充'),
+      '游戏用户 ID：' + (profile.roleId || '尚未同步，进入游戏大厅后自动补充'),
+      '区服：' + (profile.serverId || (profile.lastLoginAt ? '尚未同步，进入游戏大厅后自动补充' : '尚未记录，首次进入游戏后自动补充')),
       '最近登录方式：' + lastLoginOptionLabel(profile),
       '最近登录：' + (profile.lastLoginAt ? new Date(profile.lastLoginAt).toLocaleString('zh-CN', {hour12: false}) : '尚未确认')
     ].join('\n') : '';
@@ -2620,7 +2700,7 @@ const ChannelCore = (() => {
     GM_setValue(PREFIX + 'presence-ack:' + request.reply, {instance: instanceId, profileId: currentProfileId || expectedProfileId, phase: accountPhase, expires: Date.now() + 10000});
   });
   const accountRefresh = setInterval(() => { heartbeat(); renderAccounts(); }, 15000);
-  const gameAccountRefresh = setInterval(syncGameAccount, 2000);
+  setTimeout(() => { if (currentProfileId || expectedProfileId) scheduleGameAccountSync(0); }, 0);
   window.addEventListener('focus', () => renderAccounts());
   heartbeat();
 
@@ -3226,6 +3306,7 @@ const ChannelCore = (() => {
         .record-item{position:relative;border-left:1px solid var(--separator);padding:0 8px 14px 13px;margin:0}.record-item:before{content:"";position:absolute;left:-4px;top:7px;width:7px;height:7px;border-radius:50%;background:var(--text-tertiary);border:2px solid var(--panel-solid)}.record-item:last-child{padding-bottom:0;border-left-color:transparent}.record-item.error:before{background:var(--danger)}.record-item.warning:before{background:var(--warning)}.record-item.success:before{background:var(--success)}.record-item.is-current.progress:before{background:var(--accent);box-shadow:0 0 0 3px rgba(10,132,255,.16)}
         .record-meta{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:var(--text-tertiary);font-variant-numeric:tabular-nums}.record-badge{font-size:9px;color:var(--text-tertiary)}.record-item.is-current .record-badge{color:var(--accent)}.record-item.error .record-badge,.record-item.error .record-message{color:var(--danger)}.record-item.success .record-badge{color:var(--success)}.record-message{margin-top:3px;font-size:11px;line-height:1.7;color:var(--text-secondary);overflow-wrap:anywhere}.record-item.is-current .record-message{color:var(--text)}.record-empty{padding:9px 0 13px;font-size:11px;line-height:1.7;color:var(--text-tertiary)}
         .panel-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:12px}.panel-footer small{color:var(--text-tertiary);font-size:10px}.panel-footer button{font-size:10px}.manual-entry{margin:10px 0}.manual-entry small{display:block;margin-bottom:7px;font-size:11px;line-height:1.6;color:var(--text-secondary)}.manual-entry button{margin-top:7px}.cancel-login{width:100%;margin-top:8px}
+        .credit-note{margin:10px 0 0;padding:9px 11px;border:1px solid var(--separator);border-radius:12px;background:var(--field);font-size:10px;line-height:1.75;color:var(--text-tertiary);overflow-wrap:anywhere}.credit-note strong{display:block;margin-bottom:2px;font-weight:650;color:var(--text-secondary)}.credit-note a{color:var(--accent);text-decoration:none}.credit-note a:hover{text-decoration:underline}
         .security-note{margin-top:10px;border:1px solid var(--separator);border-radius:14px;background:var(--field);overflow:hidden}.security-note summary{padding:9px 11px;font-size:10px;font-weight:650;color:var(--text-secondary)}.security-note .security-body{padding:0 11px 11px;font-size:10px;line-height:1.7;color:var(--text-tertiary)}.security-note pre{margin:7px 0 0;padding:8px;border-radius:9px;background:rgba(0,0,0,.18);color:var(--text-secondary);font:9px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
         @media (prefers-reduced-transparency:reduce){.box{background:var(--panel-solid);-webkit-backdrop-filter:none;backdrop-filter:none}}
         @media (prefers-contrast:more){:host{--separator:rgba(128,128,128,.55);--border:rgba(128,128,128,.65)}.box{border-width:2px}}
@@ -3491,6 +3572,12 @@ const ChannelCore = (() => {
       const securityCode = document.createElement('pre');
       securityCode.textContent = '// 只有开启保存且已绑定 profileId 时才写会话\nif (saveSession) GM_setValue(sessionStoreKey(profileId, provider), record);\n// 授权回调读取后立即删除\nGM_deleteValue(resultKey(context.state));\n// 移除账号时清理它名下全部渠道会话\nforgetSessions(profileId);\n// 启动票据一次性消费\nsessionStorage.removeItem(LAUNCH);';
       securityBody.appendChild(securityCode); security.appendChild(securityBody); content.appendChild(security);
+      const credit = document.createElement('p'); credit.className = 'credit-note';
+      const creditLead = document.createElement('strong'); creditLead.textContent = '第一作者与源码来源'; credit.appendChild(creditLead);
+      credit.appendChild(document.createTextNode('谨向 @暗鹊 致以诚挚感谢。本项目基于 @暗鹊 创作的《统一登录器》源码整理、维护与扩展，并非 @暗鹊 官方发布。'));
+      const sourceLink = document.createElement('a'); sourceLink.href = 'https://github.com/Clarrycy/jinnangmiaoji/blob/main/jinnangdai/payload/unified-login.user.js';
+      sourceLink.target = '_blank'; sourceLink.rel = 'noopener noreferrer'; sourceLink.textContent = '查看原始源码'; credit.appendChild(sourceLink);
+      credit.appendChild(document.createTextNode('。')); content.appendChild(credit);
       const footer = document.createElement('div'); footer.className = 'panel-footer'; content.appendChild(footer);
       const note = document.createElement('small'); note.textContent = 'v' + VERSION + ' · 多渠道本地版 · ' + ChannelRegistry.visibleChannels().length + ' 个渠道';
       footer.appendChild(note);
@@ -3519,7 +3606,7 @@ const ChannelCore = (() => {
 /* DIRECT-ENGINE-BEGIN */
 (() => {
   'use strict';
-  const VERSION = '1.1';
+  const VERSION = '1.1.2';
   const ORIGIN = 'https://web.sanguosha.com';
   const SESSION_KEY = 'wegame.qq.session.v1';
   const SESSION_STORE_PREFIX = 'sgs-login-session-v3:';
@@ -3679,18 +3766,31 @@ const ChannelCore = (() => {
     return result;
   }
   function gameAuthFields() {
-    let self = null;
-    try { self = page.AccountInfo?.Self || page.AccountInfo?.self || null; } catch (_) {}
+    let self = null, user = null;
+    try {
+      self = page.AccountInfo?.Self || page.AccountInfo?.self || null;
+      user = page.UserData?.Self || page.UserData?.self || null;
+    } catch (_) {}
+    const first = (sources, names) => {
+      for (const source of sources) {
+        if (!source || typeof source !== 'object') continue;
+        for (const name of names) {
+          const value = source[name];
+          if ((typeof value === 'string' || typeof value === 'number') && String(value).trim()) {
+            return String(value).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 256);
+          }
+        }
+      }
+      return '';
+    };
     const fields = {};
     for (const [name, value] of [
-      ['serverId', self?.SeverID || self?.ServerID],
-      ['loginAccount', self?.Account],
-      ['channelAccount', self?.ChannelAccount]
-    ]) {
-      if ((typeof value === 'string' || typeof value === 'number') && String(value).trim()) {
-        fields[name] = String(value).trim().slice(0, 256);
-      }
-    }
+      ['serverId', first([self, user], ['SeverID', 'ServerID', 'ServerId', 'serverId', 'server_id'])],
+      ['roleId', first([self, user], ['UserId', 'UserID', 'userId', 'RoleId', 'RoleID', 'roleId'])],
+      ['roleName', first([user, self], ['Nickname', 'NickName', 'nickname', 'UserName'])],
+      ['loginAccount', first([self], ['Account'])],
+      ['channelAccount', first([self], ['ChannelAccount'])]
+    ]) if (value) fields[name] = value;
     return fields;
   }
   let boundClientToken = '';
