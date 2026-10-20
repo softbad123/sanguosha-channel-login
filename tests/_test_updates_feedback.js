@@ -80,19 +80,19 @@ for (let index = 0; index < 25; index += 1) {
 }
 assert.strictEqual(feedback.items().length, 20, 'feedback limit was not enforced');
 
-const report = feedback.report({version: '1.2.0', channelId: 'xiaomi', browser: 'QQ 浏览器 138'});
+const report = feedback.report({version: '1.3.0', channelId: 'xiaomi', browser: 'QQ 浏览器 138'});
 assert.strictEqual(report.schema, 'sgs-feedback-log-v1');
 assert.strictEqual(report.privacy.autoUpload, false);
-assert.strictEqual(report.environment.version, '1.2.0');
+assert.strictEqual(report.environment.version, '1.3.0');
 assert(!JSON.stringify(report).includes('token=supersecret'), 'feedback report retained a credential');
 
 const versionSource = extractFunction(main, 'versionParts') + '\n' + extractFunction(main, 'versionIsNewer');
 const versionSandbox = {};
 vm.runInNewContext(versionSource + '\nthis.isNewer = versionIsNewer;', versionSandbox);
-assert.strictEqual(versionSandbox.isNewer('v1.2.0', '1.1.4'), true);
-assert.strictEqual(versionSandbox.isNewer('1.1.4', '1.2.0'), false);
+assert.strictEqual(versionSandbox.isNewer('v1.3.0', '1.2.0'), true);
+assert.strictEqual(versionSandbox.isNewer('1.2.0', '1.3.0'), false);
 assert.strictEqual(versionSandbox.isNewer('1.10.0', '1.9.9'), true);
-assert.strictEqual(versionSandbox.isNewer('release-latest', '1.2.0'), false);
+assert.strictEqual(versionSandbox.isNewer('release-latest', '1.3.0'), false);
 
 const identitySource = extractFunction(main, 'gameIdentityReady');
 const identitySandbox = {};
@@ -114,7 +114,7 @@ const metadataVersion = /^\/\/\s*@version\s+([0-9.]+)\s*$/m.exec(main)?.[1];
 const hostVersion = /const VERSION = '([0-9.]+)'/.exec(main)?.[1];
 const engineVersion = /const VERSION = '([0-9.]+)'/.exec(engine)?.[1];
 assert.deepStrictEqual({metadataVersion, hostVersion, engineVersion, packageVersion: pkg.version},
-  {metadataVersion: '1.2.0', hostVersion: '1.2.0', engineVersion: '1.2.0', packageVersion: '1.2.0'});
+  {metadataVersion: '1.3.0', hostVersion: '1.3.0', engineVersion: '1.3.0', packageVersion: '1.3.0'});
 
 assert(main.includes('// @updateURL    https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js'), 'update URL is not pinned');
 assert(main.includes('// @downloadURL  https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js'), 'download URL is not pinned');
@@ -123,7 +123,10 @@ assert(main.includes('const COLLAPSED_PANEL_WIDTH = 208;'), 'compact collapsed w
 assert(main.includes('.box.is-collapsed .panel-hide{display:none}'), 'collapsed header still shows the hide action');
 assert(main.includes('panelHost.style.width = (next ? COLLAPSED_PANEL_WIDTH : EXPANDED_PANEL_WIDTH)'), 'panel width does not follow collapsed state');
 assert(main.includes('gameLoginAutoCollapsed = true;'), 'game login watcher does not stop after one success');
-assert(main.includes("feedbackLog.add('success', '检测到游戏账号资料，已自动折叠登录面板。'"), 'official login auto-collapse is not logged');
+assert(main.includes("autoCollapseForLogin('检测到游戏账号资料，已自动折叠登录面板。'"), 'game login auto-collapse is not logged');
+assert(main.includes("autoCollapseForLogin('检测到官网账号登录完成，已自动折叠登录面板。'"), 'official login auto-collapse is not logged');
+assert(main.includes('function officialLoginReady()') && main.includes("getElementById('goInGameBtn')"),
+  'official login success probe is missing');
 assert(main.includes('复制反馈日志') && main.includes('导出反馈日志') && main.includes('问题反馈'), 'feedback actions are not wired into the panel');
 assert(main.includes('clear(); status('), 'feedback log cannot be cleared');
 assert(main.includes("tabs.className = 'panel-tabs'") && main.includes("['login', '登录'], ['account', '账号'], ['diagnostics', '诊断']"), 'menu-style panel tabs are missing');

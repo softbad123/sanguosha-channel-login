@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const VERSION = '1.2.0';
+  const VERSION = '1.3.0';
   const ORIGIN = 'https://web.sanguosha.com';
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
   const SESSION_KEY = 'wegame.qq.session.v1';
@@ -116,8 +116,21 @@
   const EMBEDDED = page.__JND_HOST?.source === 'sgs-multichannel';
   if (location.origin !== ORIGIN || window.top !== window) return;
 
+  let diagnosticTraceId = '';
+  let diagnosticProvider = '';
+  function reportDiagnostic(detail = {}) {
+    const payload = {source: 'direct-engine', version: VERSION,
+      traceId: diagnosticTraceId, provider: diagnosticProvider, ...detail};
+    try {
+      if (typeof page.__SGS_DIAGNOSTIC__ === 'function') return page.__SGS_DIAGNOSTIC__(payload);
+      page.dispatchEvent(new CustomEvent('sgs-unified-diagnostic-v1', {detail: payload}));
+    } catch (_) {}
+  }
   function failure(code, stage) {
-    return Object.assign(new Error(code), {stage});
+    const error = Object.assign(new Error(code), {code, stage});
+    reportDiagnostic({level: /(?:CANCELLED|EXPIRED)$/.test(code) ? 'warning' : 'error',
+      message: '直接登录失败：' + code, code, stage, errorName: error.name, stack: error.stack});
+    return error;
   }
   function assert(ok, code, stage) { if (!ok) throw failure(code, stage); }
   function fields(value, keys, stage) {
@@ -172,19 +185,21 @@
     return result;
   }
   function gameAuthFields() {
-    let self = null, user = null;
+    let self = null, user = null, userBrief = null;
     try {
       self = page.AccountInfo?.Self || page.AccountInfo?.self || null;
       user = page.UserData?.Self || page.UserData?.self || null;
+      userBrief = user?.UserBrief || user?.userBrief || null;
     } catch (_) {}
     const first = (sources, names) => {
       for (const source of sources) {
         if (!source || typeof source !== 'object') continue;
         for (const name of names) {
           const value = source[name];
-          if ((typeof value === 'string' || typeof value === 'number') && String(value).trim()) {
-            return String(value).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 256);
-          }
+          if (typeof value !== 'string' && typeof value !== 'number') continue;
+          const text = String(value).replace(/[\x00-\x1f\x7f]/g, '').trim();
+          if (!text || text === '0' || /^(?:null|undefined|false)$/i.test(text)) continue;
+          return text.slice(0, 256);
         }
       }
       return '';
@@ -192,8 +207,8 @@
     const fields = {};
     for (const [name, value] of [
       ['serverId', first([self, user], ['SeverID', 'ServerID', 'ServerId', 'serverId', 'server_id'])],
-      ['roleId', first([self, user], ['UserId', 'UserID', 'userId', 'RoleId', 'RoleID', 'roleId'])],
-      ['roleName', first([user, self], ['Nickname', 'NickName', 'nickname', 'UserName'])],
+      ['roleId', first([userBrief, user, self], ['userID', 'UserId', 'UserID', 'userId', 'RoleId', 'RoleID', 'roleId'])],
+      ['roleName', first([userBrief, user, self], ['nickname', 'Nickname', 'NickName', 'UserName', 'userName'])],
       ['loginAccount', first([self], ['Account'])],
       ['channelAccount', first([self], ['ChannelAccount'])]
     ]) if (value) fields[name] = value;
@@ -306,7 +321,7 @@
         ['authHandler(e){let t=e.Protocol;',
           "authHandler(e){let t=e.Protocol;try{window.__SGS_DIRECT_EVENT__({type:'game-auth',provider:'xiaomi',success:Number(t.errCode)===0,code:String(Number(t.errCode)||0)})}catch(_){}"],
         ['notifyUserData(e){let t=e.Protocol;if(t.finished){',
-          "notifyUserData(e){let t=e.Protocol;if(t.finished){try{const a=AccountInfo.Self||{};window.__SGS_DIRECT_EVENT__({type:'game-auth',provider:'xiaomi',success:true,serverId:String(a.SeverID||''),loginAccount:String(a.Account||''),channelAccount:String(a.ChannelAccount||'')})}catch(_){}"]
+          "notifyUserData(e){let t=e.Protocol;if(t.finished){try{const u=UserData.Self||{},b=u.UserBrief||{},a=AccountInfo.Self||{};window.__SGS_DIRECT_EVENT__({type:'game-auth',provider:'xiaomi',success:true,roleName:String(b.nickname||u.Nickname||''),roleId:String(b.userID||u.userID||u.UserId||''),serverId:String(a.SeverID||''),loginAccount:String(a.Account||''),channelAccount:String(a.ChannelAccount||'')})}catch(_){}"]
       ];
       for (const [find, replacement] of markers) {
         if (source.split(find).length === 2) source = source.replace(find, replacement);
@@ -3758,6 +3773,9 @@
     const provider = sessionText(options.provider, 32);
     const profileId = sessionText(options.profileId, 256);
     const required = options.required === true;
+    diagnosticTraceId = typeof options.traceId === 'string' && /^[A-Za-z0-9._:-]{1,80}$/.test(options.traceId)
+      ? options.traceId : random().slice(0, 16);
+    diagnosticProvider = provider;
     let saved = savedSession(provider, profileId);
     if (!saved && profileId) {
       saved = sessionRecords().map(item => item.record)
@@ -4141,6 +4159,9 @@
   async function start(provider = 'qq', options = {}) {
     const mode = ['vivo', 'oppo', 'steam'].includes(provider) && options?.mode === 'browser' ? 'browser' : 'qr';
     assert(['qq', 'wx', 'bilibili', 'steam', 'oppo', 'xiaomi', 'vivo', 'huawei'].includes(provider), 'PROVIDER_UNAVAILABLE', 'setup');
+    diagnosticTraceId = typeof options?.traceId === 'string' && /^[A-Za-z0-9._:-]{1,80}$/.test(options.traceId)
+      ? options.traceId : random().slice(0, 16);
+    diagnosticProvider = provider;
     const profileId = sessionText(options?.profileId, 256);
     if (profileId) assert(SESSION_PROFILE_PATTERN.test(profileId), 'PROFILE_ID_INVALID', 'setup');
     const saveSession = options?.saveSession !== false;

@@ -2,7 +2,7 @@
 
 在三国杀网页版登录页提供一个统一的多渠道登录面板，把当前浏览器会话接到渠道官方的扫码、网页授权和游卡兑换链路，并在本机提供账号管理与快速直登。
 
-当前版本：`1.2.0`
+当前版本：`1.3.0`
 支持渠道：小米、Vivo、OPPO、华为、哔哩哔哩、WeGame、Steam（共 7 个）  
 运行方式：Tampermonkey 用户脚本（Chrome / Edge / QQ 浏览器极速模式）
 
@@ -15,6 +15,16 @@
 - 原始源码：[@暗鹊《统一登录器》](https://github.com/Clarrycy/jinnangmiaoji/blob/main/jinnangdai/payload/unified-login.user.js)。
 - 本项目基于上述源码整理、维护与扩展。谨向 @暗鹊 致以诚挚感谢；本仓库并非 @暗鹊 官方发布。
 - 维护者：softbad123。修改说明、第三方来源与许可证状态见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 1.3.0 更新
+
+- 账号列表改为 `游戏内 ID · 账号 · 区服备注 · 上次登录时间`；游戏内 ID 优先读取游戏角色资料 `UserData.Self.UserBrief.userID`，并兼容旧字段、`DXC_selfUserID` 与 `#uuid` 兜底。未识别到 ID 或未填写备注时自动省略对应段，不显示占位文案。
+- 区服默认不展示，仅在账号备注 `zoneNote` 存在时显示；WeGame 的 QQ / 微信等通道可用备注区分，不再显示容易误解的“区服未同步 / 区服未记录”。
+- 修复官服登录成功后面板不自动收起：同时探测官服账号页的 `#selectGame`、`.account-box` 和 `#goInGameBtn`，与渠道服游戏资料探测共用只执行一次的幂等折叠逻辑。
+- 账号选择改为可访问的自定义列表，选中高亮横向铺满整行，支持鼠标、方向键、Home 与 End。
+- 反馈日志升级为可溯源诊断：记录 `traceId`、流程、阶段、错误码、HTTP 状态、通道、异常类型、源码文件、行列号、堆栈及 `cause` 链；关键登录、更新、回调、启动交接与自动折叠异常都会主动入库。
+- 日志存储损坏或写入失败时自动启用页内内存缓冲，当前页面仍可复制/导出；凭据、Cookie、Bearer、URL 查询串和长随机标识继续脱敏。
+- 游戏资料读取增加缓存，日志错误对象只解析一次，直登引擎与宿主共用同一个 `traceId`，减少重复扫描和重复记录。
 
 ## 1.2.0 更新
 
@@ -96,7 +106,7 @@
 3. 下载固定更新地址中的 [`sanguosha-channel-login.user.js`](https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js)，在 Tampermonkey 中导入并启用。Release 中可能同时提供带版本号的副本，内容相同。
 4. 停用或删除旧的“小米服登录器”“统一登录器”以及旧版“三国杀多渠道登录”脚本，避免同页重复注入。
 5. 打开 <https://web.sanguosha.com/login/10th_client/index.html>。
-6. 页面右侧出现登录面板后，确认页脚显示 `v1.2.0 · 多渠道本地版 · 7 个渠道`。
+6. 页面右侧出现登录面板后，确认页脚显示 `v1.3.0 · 多渠道本地版 · 7 个渠道`。
 
 ### 方式二：从源码安装
 
@@ -170,13 +180,13 @@ Steam 登录使用 `store.steampowered.com` 官方 OAuth 页面。扫码、账�
 **华为 / 哔哩哔哩没有账号密码入口**  
 这两个渠道当前只保留经过验证的扫码或官方登录链路，不展示无法完成游戏交接的灰色按钮。
 
-**WeGame 显示“区服未记录 / 区服未同步”**
+**账号列表为什么没有显示区服**
 
-这不是“登录失败”或“区服接口仍在等待”。账号刚授权时尚未进入游戏，区服会显示为未记录；游戏认证成功后，插件会从 `AccountInfo` / `UserData` 自动补充，最多短时轮询 240 秒。若进入角色大厅后仍未同步，请导出诊断。旧版本显示的“区服待返回 · 未打开 · 待登录”属于三个独立状态被错误拼接，`1.1.1` 已移除这组文案。
+`1.3.0` 起区服默认不展示，只在账号备注中填写后才显示 `区服备注：…`。这是刻意设计：服务器编号很少需要日常查看，而 WeGame 的 QQ / 微信等通道更适合用备注区分。游戏内 ID 会从 `UserData.Self.UserBrief.userID` 自动读取；若暂未进入角色大厅，ID 段会暂时省略，不会显示占位或空分隔符。
 
 **登录后进入加载页，又返回主登录页**
 
-`1.1.3` 已修复 WeGame 的 `PlatformID` 凭证误判；`1.1.4` 又修复了 QQ 浏览器丢失 `window.name` 后交接无法恢复，以及回退到经典 OL 登录页的问题。若仍复现，请先确认版本为 `1.2.0`、Tampermonkey 为 `5.5.1+`、没有同时启用旧版登录脚本，再从“运行记录”复制或导出反馈日志；日志中应关注 `AccountInfo.Self` 是否存在 `Token`、`Ticket` 或 `WeGameTicket`，以及是否出现 `GotoLogout`。QQ 浏览器慢网下请给官方请求和游戏加载最多 4 分钟，不要连续重复点击登录。
+`1.1.3` 已修复 WeGame 的 `PlatformID` 凭证误判；`1.1.4` 又修复了 QQ 浏览器丢失 `window.name` 后交接无法恢复，以及回退到经典 OL 登录页的问题。若仍复现，请先确认版本为 `1.3.0`、Tampermonkey 为 `5.5.1+`、没有同时启用旧版登录脚本，再从“运行记录”复制或导出反馈日志；日志中会显示失败所在的流程、阶段、错误码、源码行列号和 `cause` 链，便于直接定位。QQ 浏览器慢网下请给官方请求和游戏加载最多 4 分钟，不要连续重复点击登录。
 
 **慢网络下如何理解超时**
 
@@ -185,6 +195,7 @@ Steam 登录使用 `store.steampowered.com` 官方 OAuth 页面。扫码、账�
 ## 开发与验证
 
 - `_direct_engine.js` 是独立登录引擎；主脚本中的内嵌引擎必须与其逐字一致。
+- 修改引擎后运行 `npm run sync:engine`，由 `tools/sync-embedded-engine.js` 更新内嵌副本，避免手工复制造成版本漂移。
 - `tests/_test_embedded_engine_sync.js` 同时校验内嵌一致性以及元数据、宿主、引擎三处版本号。
 - `tests/_test_login_options.js` 校验 7 个可见桥接渠道，并确认荣耀渠道不再注册。
 - `tests/_test_registry_security.js` 校验渠道域名与 `@connect` 配置一致。
@@ -192,6 +203,9 @@ Steam 登录使用 `store.steampowered.com` 官方 OAuth 页面。扫码、账�
 - `tests/_test_credits.js` 校验第一作者、固定源码链接和 Apache-2.0 许可证声明。
 - `tests/_test_qq_handoff.js` 校验 QQ 浏览器标签被提升后的交接恢复、标签隔离与守卫时长。
 - `tests/_test_updates_feedback.js` 校验版本比较、固定更新地址、日志脱敏/去重/上限、官服登录判定与紧凑折叠结构。
+- `tests/_test_error_trace.js` 校验错误码、阶段、源码行列、堆栈、`cause` 链、运行时捕获与存储故障回退。
+- `tests/_test_official_autocollapse.js` 校验官服登录成功探测与面板只自动折叠一次。
+- `tests/_test_account_display.js` 校验游戏内 ID、备注、上次登录格式及整行选中高亮结构。
 - 账号恢复、WeGame 竞态、Vivo / OPPO / Steam / B 站交接等均保留 Node 回归测试。
 
 运行纯 Node 回归测试：

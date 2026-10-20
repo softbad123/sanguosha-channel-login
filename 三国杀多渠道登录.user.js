@@ -7,7 +7,7 @@
 // @supportURL   https://github.com/softbad123/sanguosha-channel-login/issues
 // @updateURL    https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
 // @downloadURL  https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
-// @version      1.2.0
+// @version      1.3.0
 // @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和账号管理直达。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
 // @match        https://web.sanguosha.com/*
 // @match        https://joint.vivo.com.cn/game-subaccount-login/*
@@ -1636,7 +1636,7 @@ const ChannelCore = (() => {
       if (typeof source !== 'string' || !name || !name.includes('main')) return source;
       const markers = [
         ['authHandler(e){let t=e.Protocol;', "authHandler(e){let t=e.Protocol;try{window.__xiaomiConnectionState=()=>{try{let s=WBMgr.GetInstance().IsConnected;return typeof s==='boolean'?s:null;}catch(_){return null;}};window.__xiaomiBrowserEvent('auth-result',{code:Number(t.errCode)});}catch(_){}"],
-        ['notifyUserData(e){let t=e.Protocol;if(t.finished){', "notifyUserData(e){let t=e.Protocol;if(t.finished){try{window.__xiaomiBrowserEvent('user-data',{roleName:UserData.Self?String(UserData.Self.Nickname||''):'',roleId:AccountInfo.Self?String(AccountInfo.Self.UserId||''):'',serverId:AccountInfo.Self?String(AccountInfo.Self.SeverID||''):''});}catch(_){}"],
+        ['notifyUserData(e){let t=e.Protocol;if(t.finished){', "notifyUserData(e){let t=e.Protocol;if(t.finished){try{const u=UserData.Self||{},b=u.UserBrief||{},a=AccountInfo.Self||{};window.__xiaomiBrowserEvent('user-data',{roleName:String(b.nickname||u.Nickname||''),roleId:String(b.userID||u.userID||u.UserId||''),serverId:String(a.SeverID||'')});}catch(_){}"],
         ['enterScene(){if(NSRegressActivity2026Manager', "enterScene(){try{window.__xiaomiBrowserEvent('enter-scene',{});}catch(_){}if(NSRegressActivity2026Manager"]
       ];
       const hooks = markers.map(([find, replacement]) => {
@@ -1819,9 +1819,10 @@ const ChannelCore = (() => {
   const LEGACY_TRANSIENT_PROFILE_KEY = CHANNEL.contextPrefix + '-transient-profile-v1';
   const LOGIN_PAGE = 'https://web.sanguosha.com/login/10th_client/index.html';
   const PENDING_ACCOUNT_KEY = 'sgs-unified-pending-account-v1';
-  const VERSION = '1.2.0';
+  const VERSION = '1.3.0';
   const NETWORK_TIMEOUT = 60000;
   const GAME_ROUTE_PATTERN = /^\/(?:x|10|10th|login)\/pc\//;
+  const OFFICIAL_LOGIN_ROUTE_PATTERN = /^\/login\/(?:10th_client|x)(?:\/index(?:\.html)?)?\/?$/;
   const COLLAPSED_PANEL_WIDTH = 208;
   const EXPANDED_PANEL_WIDTH = 336;
   const GAME_LOGIN_WATCH_MS = 10 * 60 * 1000;
@@ -1847,27 +1848,148 @@ const ChannelCore = (() => {
     const now = typeof options.now === 'function' ? options.now : Date.now;
     const session = typeof options.session === 'string' ? options.session.slice(0, 64) : '';
     const levels = new Set(['info', 'progress', 'success', 'warning', 'error']);
+    let memoryEntries = [];
+    let memoryOnly = false;
     function cleanText(value, max = 600) {
       let text = String(value == null ? '' : value)
         .replace(/[\u0000-\u001f\u007f]+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
       text = text.replace(/\b(https?:\/\/[^\s?#]+)[?#][^\s]*/gi, '$1?<已隐藏>');
-      text = text.replace(/\b(token|ticket|code|state|session|cookie|authorization|openid|access_token|refresh_token|password|passwd)\b\s*[:=]\s*["']?[^"'\s&,;]{4,}/gi, '$1=<已隐藏>');
+      text = text.replace(/\b(Bearer)\s+[^\s,;]+/gi, '$1 <已隐藏>');
+      text = text.replace(/\b(token|ticket|code|state|session|sessionid|cookie|authorization|openid|open_id|access_token|refresh_token|password|passwd|secret|sign|vkey|qrsig|ptqrtoken)\b\s*[:=]\s*["']?[^"'\s&,;]{2,}/gi, '$1=<已隐藏>');
       text = text.replace(/\b[A-Za-z0-9_-]{32,}\b/g, '<已隐藏>');
       text = text.replace(/正在恢复([^，。…]{1,80})的本地/g, '正在恢复[账号]的本地');
       text = text.replace(/并选中([^，。]{1,80})，但当前渠道/g, '并选中[账号]，但当前渠道');
       return text.slice(0, max);
     }
+    function cleanStack(value) {
+      if (!value) return '';
+      return String(value).replace(/\r/g, '').split('\n').slice(0, 24)
+        .map(line => cleanText(line, 420)).filter(Boolean).join('\n').slice(0, 3200);
+    }
+    function stackOrigin(value) {
+      const lines = String(value || '').replace(/\r/g, '').split('\n').slice(0, 24);
+      for (const line of lines) {
+        const match = /(?:\(|at\s+|@)?((?:[A-Za-z][A-Za-z0-9+.-]*:\/\/|[A-Za-z]:[\\/]|\/|\.{0,2}[\\/])[^()\s]+?):(\d+):(\d+)\)?\s*$/.exec(line.trim());
+        if (!match) continue;
+        const source = cleanText(match[1], 300);
+        if (!source) continue;
+        return {source, line: Number(match[2]), column: Number(match[3])};
+      }
+      return null;
+    }
     function cleanMeta(meta) {
       if (!meta || typeof meta !== 'object') return {};
       const result = {};
-      for (const key of ['stage', 'code', 'provider', 'mode', 'source']) {
-        const value = cleanText(meta[key], 160);
+      for (const key of ['traceId', 'flow', 'step', 'stage', 'code', 'provider', 'mode', 'errorName',
+        'causeCode', 'causeStage', 'causeErrorName', 'causeSource']) {
+        const value = cleanText(meta[key], 180);
         if (value) result[key] = value;
       }
-      if (Number.isFinite(Number(meta.httpStatus))) result.httpStatus = Number(meta.httpStatus);
+      if (meta.source) {
+        const source = cleanText(meta.source, 300);
+        if (source) result.source = source;
+      }
+      if (meta.cause) {
+        const cause = cleanText(meta.cause, 600);
+        if (cause) result.cause = cause;
+      }
+      for (const key of ['httpStatus', 'line', 'column', 'durationMs', 'causeLine', 'causeColumn']) {
+        const value = Number(meta[key]);
+        if (Number.isFinite(value)) result[key] = value;
+      }
+      const stack = cleanStack(meta.stack);
+      if (stack) result.stack = stack;
+      const causeStack = cleanStack(meta.causeStack);
+      if (causeStack) result.causeStack = causeStack;
       return result;
+    }
+    function errorDetails(value, context = {}) {
+      const meta = cleanMeta(context);
+      let message = '';
+      let current = value;
+      const causedBy = [];
+      for (let depth = 0; depth < 4 && current != null; depth += 1) {
+        if (typeof current === 'string' || typeof current === 'number' || typeof current === 'boolean') {
+          if (!message) message = String(current);
+          else if (depth > 0) causedBy.push(String(current));
+          break;
+        }
+        if (typeof current !== 'object') break;
+        const name = typeof current.name === 'string' ? current.name : '';
+        const text = typeof current.message === 'string' ? current.message
+          : typeof current.reason === 'string' ? current.reason : '';
+        if (!message && text) message = text;
+        if (depth === 0) {
+          if (!meta.errorName && name) meta.errorName = cleanText(name, 80);
+          if (!meta.code && current.code != null) meta.code = cleanText(current.code, 120);
+          if (!meta.stage && typeof current.stage === 'string') meta.stage = cleanText(current.stage, 120);
+          if (!meta.provider && typeof current.provider === 'string') meta.provider = cleanText(current.provider, 80);
+        } else {
+          if (text) causedBy.push(text);
+          if (!meta.causeErrorName && name) meta.causeErrorName = cleanText(name, 80);
+          if (!meta.causeCode && current.code != null) meta.causeCode = cleanText(current.code, 120);
+          if (!meta.causeStage && typeof current.stage === 'string') meta.causeStage = cleanText(current.stage, 120);
+          if (!meta.causeStack && typeof current.stack === 'string') meta.causeStack = current.stack;
+          if (!Number.isFinite(meta.causeLine)) {
+            const causeLine = Number(current.lineNumber ?? current.lineno);
+            if (Number.isFinite(causeLine)) meta.causeLine = causeLine;
+          }
+          if (!Number.isFinite(meta.causeColumn)) {
+            const causeColumn = Number(current.columnNumber ?? current.colno);
+            if (Number.isFinite(causeColumn)) meta.causeColumn = causeColumn;
+          }
+        }
+        if (!meta.source) {
+          const source = current.fileName || current.filename || current.source || current.sourceURL;
+          if (typeof source === 'string') meta.source = cleanText(source, 300);
+        }
+        if (!Number.isFinite(meta.line)) {
+          const line = Number(current.lineNumber ?? current.lineno);
+          if (Number.isFinite(line)) meta.line = line;
+        }
+        if (!Number.isFinite(meta.column)) {
+          const column = Number(current.columnNumber ?? current.colno);
+          if (Number.isFinite(column)) meta.column = column;
+        }
+        if (!Number.isFinite(meta.httpStatus)) {
+          const status = Number(current.httpStatus ?? current.status);
+          if (Number.isFinite(status)) meta.httpStatus = status;
+        }
+        if (!meta.stack && typeof current.stack === 'string') meta.stack = current.stack;
+        current = current.cause;
+      }
+      if (!meta.source || !Number.isFinite(meta.line) || !Number.isFinite(meta.column)) {
+        const origin = stackOrigin(meta.stack);
+        if (origin) {
+          if (!meta.source) meta.source = origin.source;
+          if (!Number.isFinite(meta.line)) meta.line = origin.line;
+          if (!Number.isFinite(meta.column)) meta.column = origin.column;
+        }
+      }
+      if (meta.causeStack && (!Number.isFinite(meta.causeLine) || !Number.isFinite(meta.causeColumn))) {
+        const origin = stackOrigin(meta.causeStack);
+        if (origin) {
+          if (!meta.causeSource) meta.causeSource = origin.source;
+          if (!Number.isFinite(meta.causeLine)) meta.causeLine = origin.line;
+          if (!Number.isFinite(meta.causeColumn)) meta.causeColumn = origin.column;
+        }
+      }
+      if (!meta.cause && causedBy.length) meta.cause = causedBy.filter((text, index, list) => text && list.indexOf(text) === index).join(' ← ');
+      return {message: cleanText(message, 600), meta};
+    }
+    function traceId(prefix = 'run') {
+      let random = '';
+      try {
+        const bytes = new Uint8Array(8);
+        if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+        else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
+        random = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+      } catch (_) {
+        random = Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0');
+      }
+      return 'fb-' + cleanText(prefix, 32).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') + '-' + random;
     }
     function normalize(entry) {
       if (!entry || typeof entry !== 'object') return null;
@@ -1893,13 +2015,28 @@ const ChannelCore = (() => {
       return result;
     }
     function readAll() {
-      try { return trim(storage.read()); } catch (_) { return []; }
+      if (memoryOnly) return trim(memoryEntries);
+      try {
+        memoryEntries = trim(storage.read());
+        return memoryEntries;
+      } catch (_) {
+        memoryOnly = true;
+        return trim(memoryEntries);
+      }
     }
     function writeAll(list) {
       let safe = trim(list);
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        try { storage.write(safe); return safe; }
-        catch (_) { safe = safe.slice(-Math.max(20, Math.floor(safe.length / 2))); }
+        try {
+          storage.write(safe);
+          memoryEntries = safe;
+          memoryOnly = false;
+          return safe;
+        } catch (_) {
+          memoryOnly = true;
+          memoryEntries = safe;
+          safe = safe.slice(-Math.max(20, Math.floor(safe.length / 2)));
+        }
       }
       return safe;
     }
@@ -1920,6 +2057,10 @@ const ChannelCore = (() => {
       } else list.push(entry);
       return writeAll(list);
     }
+    function addError(error, context = {}) {
+      const details = errorDetails(error, context);
+      return add('error', context.message || details.message || '未知异常', details.meta);
+    }
     function items() {
       return readAll().map(entry => ({...entry, ...(entry.meta ? {meta: {...entry.meta}} : {})}));
     }
@@ -1935,14 +2076,13 @@ const ChannelCore = (() => {
           note: '日志只保存在本机；需用户主动复制或导出后再提交，未上传账号凭据。'}, entries: items()};
     }
     function clear() { return writeAll([]); }
-    return {add, items, report, clear};
+    return {add, addError, errorDetails, items, report, clear, traceId};
   }
   /* FEEDBACK-LOG-END */
 
   // UI changes apply only to this document; each new page starts shown at the top right.
   GM_deleteValue('sgs-xiaomi-panel-prefs'); // Discard the legacy persistent preference.
   let panelState = {hidden: false, left: null, top: null};
-  const log = [];
   let stateText = isBrowserChannel
     ? (hasBrowserLogin
       ? '选择登录方式：扫码可在面板完成；账号密码、短信验证码和网页扫码在' + CHANNEL.name + '官方窗口完成，脚本会自动继续。'
@@ -2060,16 +2200,19 @@ const ChannelCore = (() => {
     return accounts.update(id, changes, false, CHANNEL.id);
   }
   function profileZone(profile) {
-    if (!profile) return '区服未记录';
-    if (profile.zoneNote) return '区服备注：' + profile.zoneNote;
     const owner = profileChannel(profile);
-    return owner.shortName + ' · ' + profileZoneSummary(profile);
+    const parts = [owner.shortName];
+    if (profile?.serverId) parts.push('区服 ' + profile.serverId);
+    if (profile?.zoneNote) parts.push('备注 ' + profile.zoneNote);
+    return parts.join(' · ');
   }
   function profileZoneSummary(profile) {
-    if (!profile) return '区服未记录';
-    if (profile.zoneNote) return '区服备注：' + profile.zoneNote;
-    if (profile.serverId) return '区服 ' + profile.serverId;
-    return profile.lastLoginAt ? '区服未同步' : '区服未记录';
+    if (profile?.zoneNote) return '区服备注：' + profile.zoneNote;
+    return '';
+  }
+  function profileGameId(profile) {
+    const value = String(profile?.roleId || '').replace(/[\x00-\x1f\x7f]/g, '').trim();
+    return value && value !== '0' && !/^(?:null|undefined|false)$/i.test(value) ? value.slice(0, 80) : '';
   }
   function shortLoginTime(value) {
     const date = new Date(Number(value));
@@ -2087,15 +2230,37 @@ const ChannelCore = (() => {
     if (state.has('disconnected')) return '连接已断开';
     return '';
   }
-  function profileAccountLabel(profile, live = []) {
-    if (!profile) return '尚未登录';
+  function profileLiveState(profile, live = []) {
+    if (!profile) return '';
     const liveLabel = liveAccountLabel(live);
     if (liveLabel) return liveLabel;
     if (profile.id === (currentProfileId || expectedProfileId)) {
-      const phase = {authorizing: '正在登录', loading: '正在进入游戏', connected: '已登录',
-        failed: '登录失败', disconnected: '连接已断开'}[accountPhase];
-      if (phase) return phase;
+      return {authorizing: '正在登录', loading: '正在进入游戏', connected: '已登录',
+        failed: '登录失败', disconnected: '连接已断开'}[accountPhase] || '';
     }
+    return '';
+  }
+  function profileListText(profile, accountLabel = '', live = []) {
+    const parts = [];
+    const gameId = profileGameId(profile);
+    if (gameId) parts.push('ID ' + gameId);
+    if (accountLabel) parts.push(String(accountLabel).trim());
+    const zone = profileZoneSummary(profile);
+    if (zone) parts.push(zone);
+    const state = profileLiveState(profile, live);
+    if (state) parts.push(state);
+    if (profile.lastLoginAt) {
+      const time = shortLoginTime(profile.lastLoginAt);
+      if (time) parts.push('上次登录 ' + time);
+    } else if (!state) {
+      parts.push(profile.lastAuthorizedAt ? '已授权' : '尚未登录');
+    }
+    return parts.filter(Boolean).join(' · ');
+  }
+  function profileAccountLabel(profile, live = []) {
+    if (!profile) return '尚未登录';
+    const liveLabel = profileLiveState(profile, live);
+    if (liveLabel) return liveLabel;
     if (profile.lastLoginAt) return '上次登录 ' + shortLoginTime(profile.lastLoginAt);
     if (profile.lastAuthorizedAt) return '已授权';
     return '尚未登录';
@@ -2105,29 +2270,49 @@ const ChannelCore = (() => {
       if (!source || typeof source !== 'object') continue;
       for (const name of names) {
         const value = source[name];
-        if ((typeof value === 'string' || typeof value === 'number') && String(value).trim()) {
-          return String(value).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, max);
-        }
+        if (typeof value !== 'string' && typeof value !== 'number') continue;
+        const text = String(value).replace(/[\x00-\x1f\x7f]/g, '').trim();
+        if (!text || text === '0' || /^(?:null|undefined|false)$/i.test(text)) continue;
+        return text.slice(0, max);
       }
     }
     return '';
   }
+  let gameIdentityCache = null;
+  function readStoredGameUserId() {
+    if (!GAME_ROUTE_PATTERN.test(location.pathname)) return '';
+    try {
+      const stored = unsafeWindow.localStorage?.getItem('DXC_selfUserID') || '';
+      const text = String(stored).replace(/[\x00-\x1f\x7f]/g, '').trim();
+      if (text && text !== '0' && !/^(?:null|undefined|false)$/i.test(text)) return text.slice(0, 80);
+    } catch (_) {}
+    try {
+      const text = String(document.querySelector('#uuid')?.textContent || '');
+      const match = /(?:^|\s)ID\s*[:：]\s*([1-9][0-9]{2,19})(?:\s|$)/i.exec(text);
+      if (match) return match[1];
+    } catch (_) {}
+    return '';
+  }
   function readGameIdentity() {
-    let self, user;
+    let self, user, userBrief;
     try {
       self = unsafeWindow.AccountInfo?.Self || unsafeWindow.AccountInfo?.self || null;
       user = unsafeWindow.UserData?.Self || unsafeWindow.UserData?.self || null;
+      userBrief = user?.UserBrief || user?.userBrief || null;
     } catch (_) { return null; }
-    if (!self && !user) return null;
+    if (!self && !user && !userBrief) return gameIdentityCache;
     let identity;
     try { identity = {
       serverId: gameField([self, user], ['SeverID', 'ServerID', 'ServerId', 'serverId', 'server_id'], 64),
-      roleId: gameField([self, user], ['UserId', 'UserID', 'userId', 'RoleId', 'RoleID', 'roleId'], 80),
-      roleName: gameField([user, self], ['Nickname', 'NickName', 'nickname', 'UserName'], 120),
-      loginAccount: gameField([self], ['Account'], 256),
+      roleId: gameField([userBrief, user, self], ['userID', 'UserId', 'UserID', 'userId', 'RoleId', 'RoleID', 'roleId'], 80),
+      roleName: gameField([userBrief, user, self], ['nickname', 'Nickname', 'NickName', 'UserName', 'userName'], 120),
+      loginAccount: gameField([self, userBrief, user], ['Account', 'account'], 256),
       channelAccount: gameField([self], ['ChannelAccount'], 256)
     }; } catch (_) { return null; }
-    return gameIdentityReady(identity) ? identity : null;
+    if (!identity.roleId) identity.roleId = readStoredGameUserId();
+    if (!gameIdentityReady(identity)) return gameIdentityCache;
+    gameIdentityCache = identity;
+    return identity;
   }
   function gameIdentityReady(identity) {
     if (!identity || typeof identity !== 'object') return false;
@@ -2138,21 +2323,66 @@ const ChannelCore = (() => {
       return !!text && text !== '0' && !/^(?:null|undefined|false)$/i.test(text);
     });
   }
+  function isGamePage() {
+    return GAME_ROUTE_PATTERN.test(location.pathname);
+  }
+  function isOfficialLoginPage() {
+    return OFFICIAL_LOGIN_ROUTE_PATTERN.test(location.pathname);
+  }
+  function officialLoginReady() {
+    if (!isOfficialLoginPage()) return false;
+    try {
+      const picker = document.getElementById('selectGame');
+      const enter = document.getElementById('goInGameBtn');
+      const accountBox = picker?.querySelector?.('.account-box');
+      if (!picker || !enter || !accountBox || picker.hidden) return false;
+      const style = typeof getComputedStyle === 'function' ? getComputedStyle(picker) : null;
+      if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+      return true;
+    } catch (error) {
+      reportFeedbackError(error, {flow: 'auto_collapse', stage: 'official_login_probe',
+        message: '官服登录完成状态检测失败'});
+      return false;
+    }
+  }
+  function autoCollapseForLogin(reason, stage, meta = {}) {
+    if (gameLoginAutoCollapsed) return false;
+    try {
+      const wasCollapsed = !panelContent || panelContent.hidden;
+      if (!setLoginPanelCollapsed(true)) return false;
+      gameLoginAutoCollapsed = true;
+      if (!wasCollapsed) feedbackLog.add('success', reason, diagnosticMeta({...meta, stage}));
+      return true;
+    } catch (error) {
+      reportFeedbackError(error, {...meta, flow: 'auto_collapse', stage,
+        message: '登录成功后面板自动折叠失败'});
+      return false;
+    }
+  }
   function watchGameLogin() {
-    if (gameLoginAutoCollapsed || gameLoginWatchTimer || !GAME_ROUTE_PATTERN.test(location.pathname)) return;
+    if (gameLoginAutoCollapsed || gameLoginWatchTimer || (!isGamePage() && !isOfficialLoginPage())) return;
     gameLoginWatchDeadline = Date.now() + GAME_LOGIN_WATCH_MS;
     let delay = 500;
     const tick = () => {
       gameLoginWatchTimer = 0;
       if (gameLoginAutoCollapsed) return;
-      const identity = readGameIdentity();
-      if (gameIdentityReady(identity)) {
-        gameLoginAutoCollapsed = true;
-        const wasCollapsed = !panelContent || panelContent.hidden;
-        if (setLoginPanelCollapsed(true) && !wasCollapsed) {
-          feedbackLog.add('success', '检测到游戏账号资料，已自动折叠登录面板。', {stage: 'game_login'});
+      try {
+        if (isOfficialLoginPage() && officialLoginReady()) {
+          autoCollapseForLogin('检测到官网账号登录完成，已自动折叠登录面板。', 'official_login',
+            {source: 'official_login_dom'});
+          return;
         }
-        return;
+        if (isGamePage()) {
+          const identity = readGameIdentity();
+          if (gameIdentityReady(identity)) {
+            autoCollapseForLogin('检测到游戏账号资料，已自动折叠登录面板。', 'game_login',
+              {source: 'AccountInfo/UserData'});
+            return;
+          }
+        }
+      } catch (error) {
+        reportFeedbackError(error, {flow: 'auto_collapse', stage: 'watch_login',
+          message: '游戏登录完成检测失败'});
       }
       if (Date.now() >= gameLoginWatchDeadline) return;
       delay = Math.min(3000, Math.round(delay * 1.35));
@@ -2179,7 +2409,11 @@ const ChannelCore = (() => {
       } catch (_) {}
     }
     try { ChannelCore.use(next.id); }
-    catch (error) { return status('渠道切换未完成：' + (error instanceof Error ? error.message : '未知错误')); }
+    catch (error) {
+      reportFeedbackError(error, {flow: 'channel_switch', stage: 'switch',
+        message: '渠道切换失败：' + (error instanceof Error ? error.message : '未知错误')});
+      return status('渠道切换未完成：' + (error instanceof Error ? error.message : '未知错误'));
+    }
     location.reload();
   }
   function setPanelVisible(visible) {
@@ -2242,17 +2476,68 @@ const ChannelCore = (() => {
     read: () => GM_getValue(FEEDBACK_LOG_KEY, []),
     write: entries => GM_setValue(FEEDBACK_LOG_KEY, entries)
   }, {limit: 240, ttl: 30 * 24 * 60 * 60 * 1000, session: feedbackSessionId()});
-  feedbackLog.add('info', '脚本已启动。', {stage: 'startup'});
+  let diagnosticTraceId = feedbackLog.traceId('boot');
+  let diagnosticFlow = 'startup';
+  let diagnosticStage = 'startup';
+  function diagnosticMeta(extra = {}) {
+    return {...(extra || {}), traceId: extra.traceId || diagnosticTraceId,
+      flow: extra.flow || diagnosticFlow, stage: extra.stage || diagnosticStage};
+  }
+  function beginDiagnosticFlow(flow, stage = 'startup') {
+    diagnosticTraceId = feedbackLog.traceId(flow);
+    diagnosticFlow = String(flow || 'run').slice(0, 80);
+    diagnosticStage = String(stage || 'startup').slice(0, 80);
+    return diagnosticTraceId;
+  }
+  function markDiagnosticStage(stage) {
+    diagnosticStage = String(stage || diagnosticStage).slice(0, 80);
+  }
+  function cancellationError(error, context = {}) {
+    return !!context.popupClosed || error?.name === 'AbortError' || /^已取消[。！]?$/.test(String(error?.message || error || ''));
+  }
+  function reportFeedbackError(error, context = {}) {
+    const meta = diagnosticMeta(context);
+    const details = feedbackLog.errorDetails(error, meta);
+    return feedbackLog.add('error', context.message || details.message || '未知异常', {...meta, ...details.meta});
+  }
+  function ingestDiagnostic(detail) {
+    if (!detail || typeof detail !== 'object') return;
+    const meta = diagnosticMeta(detail);
+    const candidate = detail.error || {
+      name: detail.errorName || 'EngineDiagnostic',
+      message: detail.message || detail.code || '未知异常',
+      stack: detail.stack,
+      code: detail.code,
+      stage: detail.stage,
+      source: detail.source,
+      lineNumber: detail.line,
+      columnNumber: detail.column,
+      httpStatus: detail.httpStatus,
+      provider: detail.provider,
+      cause: detail.cause
+    };
+    const details = feedbackLog.errorDetails(candidate, meta);
+    feedbackLog.add(detail.level || 'error', detail.message || details.message || '未知异常',
+      {...meta, ...details.meta});
+  }
+  feedbackLog.add('info', '脚本已启动。', diagnosticMeta({stage: 'startup'}));
   function installFeedbackCapture() {
     const describe = value => {
       if (typeof value === 'string') return value;
       if (value instanceof Error) return value.name + ': ' + value.message;
-      try { return JSON.stringify(value); } catch (_) { return String(value); }
+      try {
+        const text = JSON.stringify(value);
+        return text === undefined ? String(value) : text;
+      } catch (_) { return String(value); }
     };
     const record = (level, args, stage) => {
       try {
-        if (!Array.from(args).some(value => typeof value === 'string' && value.includes('[统一登录器]'))) return;
-        feedbackLog.add(level, Array.from(args, describe).join(' '), {stage});
+        const values = Array.from(args);
+        const text = values.map(describe).join(' ');
+        if (!/(?:\[统一登录器\]|\[三国杀多渠道登录\])/.test(text)) return;
+        const error = values.find(value => value instanceof Error);
+        if (error) feedbackLog.addError(error, {...diagnosticMeta({stage, source: 'console'}), message: text});
+        else feedbackLog.add(level, text, diagnosticMeta({stage, source: 'console'}));
       } catch (_) {}
     };
     try {
@@ -2269,16 +2554,22 @@ const ChannelCore = (() => {
     window.addEventListener('unhandledrejection', event => {
       try {
         const reason = event?.reason;
-        feedbackLog.add('error', '未处理的异步异常：' + (reason?.message || describe(reason)), {stage: 'unhandledrejection'});
+        const message = '未处理的异步异常：' + (reason?.message || describe(reason));
+        feedbackLog.addError(reason, {...diagnosticMeta({stage: 'unhandledrejection', flow: 'runtime'}), message});
       } catch (_) {}
     });
     window.addEventListener('error', event => {
       try {
         const source = String(event?.filename || '');
-        if (source && !/(?:sanguosha\.com|userscript|tampermonkey|violentmonkey)/i.test(source)) return;
-        feedbackLog.add('error', '页面异常：' + String(event?.message || '未知错误'), {stage: 'uncaught'});
+        if (source && !/(?:sanguosha\.com|userscript|tampermonkey|violentmonkey|chrome-extension)/i.test(source)) return;
+        const error = event?.error instanceof Error ? event.error
+          : {name: 'UncaughtError', message: String(event?.message || '未知错误'), stack: ''};
+        feedbackLog.addError(error, {...diagnosticMeta({stage: 'uncaught', flow: 'runtime',
+          source, line: event?.lineno, column: event?.colno}), message: '未捕获异常：' + error.message});
       } catch (_) {}
     });
+    try { unsafeWindow.__SGS_DIAGNOSTIC__ = ingestDiagnostic; } catch (_) {}
+    window.addEventListener('sgs-unified-diagnostic-v1', event => ingestDiagnostic(event?.detail));
   }
   installFeedbackCapture();
   const instanceId = randomId();
@@ -2300,16 +2591,17 @@ const ChannelCore = (() => {
   }
   function renderHistory() {
     if (!logNode) return;
-    const unusual = log.filter(item => ['error', 'warning'].includes(item.level));
-    if (historyCount) historyCount.textContent = log.length + ' 条' + (unusual.length ? ' · ' + unusual.length + ' 异常' : '');
+    const items = feedbackLog.items();
+    const unusual = items.filter(item => ['error', 'warning'].includes(item.level));
+    if (historyCount) historyCount.textContent = items.length + ' 条' + (unusual.length ? ' · ' + unusual.length + ' 异常' : '');
     if (diagnosticsTabButton) diagnosticsTabButton.textContent = '诊断' + (unusual.length ? ' ' + unusual.length : '');
     if (historyFilterButton) {
       historyFilterButton.textContent = errorsOnly ? '显示全部' : '仅看异常';
       historyFilterButton.setAttribute('aria-pressed', String(errorsOnly));
     }
-    if (historyClearButton) historyClearButton.disabled = !log.length;
+    if (historyClearButton) historyClearButton.disabled = !items.length;
     logNode.replaceChildren();
-    const visible = log.map((item, index) => ({...item, current: index === log.length - 1}))
+    const visible = items.map((item, index) => ({...item, current: index === items.length - 1}))
       .filter(item => !errorsOnly || ['error', 'warning'].includes(item.level)).reverse();
     if (!visible.length) {
       const empty = document.createElement('li'); empty.className = 'record-empty';
@@ -2319,21 +2611,43 @@ const ChannelCore = (() => {
     for (const item of visible) {
       const row = document.createElement('li'); row.className = 'record-item ' + item.level + (item.current ? ' is-current' : '');
       const meta = document.createElement('div'); meta.className = 'record-meta';
-      const time = document.createElement('time'); time.dateTime = item.time;
-      time.textContent = new Date(item.time).toLocaleTimeString('zh-CN', {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'});
+      const time = document.createElement('time'); time.dateTime = item.at;
+      time.textContent = new Date(item.at).toLocaleTimeString('zh-CN', {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'});
       const badge = document.createElement('span'); badge.className = 'record-badge';
-      badge.textContent = item.level === 'error' ? '异常' : item.level === 'warning' ? '注意' : item.level === 'success' ? '完成' : item.current ? '当前' : '过程';
+      badge.textContent = (item.count > 1 ? '×' + item.count + ' ' : '') +
+        (item.level === 'error' ? '异常' : item.level === 'warning' ? '注意' : item.level === 'success' ? '完成' : item.current ? '当前' : '过程');
       meta.appendChild(time); meta.appendChild(badge); row.appendChild(meta);
-      const message = document.createElement('div'); message.className = 'record-message'; message.textContent = item.status;
-      row.appendChild(message); logNode.appendChild(row);
+      const message = document.createElement('div'); message.className = 'record-message'; message.textContent = item.message;
+      row.appendChild(message);
+      const details = item.meta || {};
+      const facts = [details.flow && '流程 ' + details.flow, details.stage && '阶段 ' + details.stage,
+        details.code && '错误码 ' + details.code, Number.isFinite(details.httpStatus) && 'HTTP ' + details.httpStatus,
+        details.provider && '通道 ' + details.provider, details.traceId && '流水 ' + details.traceId,
+        details.errorName && '类型 ' + details.errorName,
+        details.source && '源码 ' + details.source + (Number.isFinite(details.line) ? ':' + details.line : '') +
+          (Number.isFinite(details.column) ? ':' + details.column : ''),
+        details.causeSource && '原因源码 ' + details.causeSource +
+          (Number.isFinite(details.causeLine) ? ':' + details.causeLine : '') +
+          (Number.isFinite(details.causeColumn) ? ':' + details.causeColumn : ''),
+        details.causeCode && '原因码 ' + details.causeCode,
+        details.cause && '原因 ' + details.cause].filter(Boolean);
+      if (facts.length || details.stack || details.causeStack) {
+        const trace = document.createElement('details'); trace.className = 'record-detail';
+        const summary = document.createElement('summary'); summary.textContent = facts.join(' · ') || '查看堆栈';
+        trace.appendChild(summary);
+        const stackText = [details.stack, details.causeStack && 'Caused by:\n' + details.causeStack].filter(Boolean).join('\n\n');
+        if (stackText) {
+          const stack = document.createElement('pre'); stack.textContent = stackText; trace.appendChild(stack);
+        }
+        row.appendChild(trace);
+      }
+      logNode.appendChild(row);
     }
   }
-  function status(text) {
+  function status(text, context = {}) {
     stateText = text;
     const level = statusLevel(text);
-    log.push({time: new Date().toISOString(), status: text, level});
-    if (log.length > 40) log.shift();
-    feedbackLog.add(level, text);
+    feedbackLog.add(level, text, diagnosticMeta(context));
     renderStatus(); renderHistory();
     if (historyDetails && level === 'error') historyDetails.open = true;
   }
@@ -2417,19 +2731,25 @@ const ChannelCore = (() => {
       return;
     }
     updateCheckActive = true;
+    const traceId = feedbackLog.traceId('update_check');
     if (manual) status('正在检查脚本更新…');
     let settled = false;
-    const finish = (text, level = 'warning') => {
+    const finish = (text, level = 'warning', error = null) => {
       if (settled) return; settled = true; updateCheckActive = false;
       if (manual) status(text);
-      feedbackLog.add(level, text, {stage: 'update_check'});
+      if (error) reportFeedbackError(error, {flow: 'update_check', stage: 'response', traceId, message: text});
+      else feedbackLog.add(level, text, {flow: 'update_check', stage: 'response', traceId});
     };
     try {
       GM_xmlhttpRequest({method: 'GET', url: UPDATE_META_URL, timeout: 15000, anonymous: true,
         headers: {Accept: 'application/vnd.github+json'},
         onload: response => {
           try {
-            if (response.status !== 200) return finish('检查更新失败：GitHub 返回 HTTP ' + response.status, 'warning');
+            if (response.status !== 200) {
+              const error = Object.assign(new Error('GitHub 返回 HTTP ' + response.status),
+                {code: 'UPDATE_HTTP_ERROR', httpStatus: response.status, stage: 'response'});
+              return finish('检查更新失败：GitHub 返回 HTTP ' + response.status, 'warning', error);
+            }
             const data = JSON.parse(response.responseText), tag = String(data.tag_name || '');
             GM_setValue(UPDATE_CHECK_KEY, {checkedAt: Date.now(), latest: tag});
             if (versionIsNewer(tag, VERSION)) {
@@ -2439,12 +2759,14 @@ const ChannelCore = (() => {
               latestVersion = ''; renderUpdateButton();
               finish('已是最新版本 v' + VERSION + '。', 'success');
             }
-          } catch (_) { finish('检查更新失败：返回内容无法解析。', 'warning'); }
+          } catch (error) { finish('检查更新失败：返回内容无法解析。', 'warning', error); }
         },
-        ontimeout: () => finish('检查更新超时，请稍后重试。', 'warning'),
-        onerror: () => finish('检查更新失败：无法连接 GitHub。', 'warning')
+        ontimeout: () => finish('检查更新超时，请稍后重试。', 'warning',
+          Object.assign(new Error('更新检查请求超时'), {code: 'UPDATE_TIMEOUT', stage: 'request'})),
+        onerror: () => finish('检查更新失败：无法连接 GitHub。', 'warning',
+          Object.assign(new Error('更新检查网络请求失败'), {code: 'UPDATE_NETWORK_ERROR', stage: 'request'}))
       });
-    } catch (_) { finish('检查更新未能启动。', 'warning'); }
+    } catch (error) { finish('检查更新未能启动。', 'warning', error); }
   }
   function scheduleUpdateCheck() {
     if (CALLBACK_CHANNEL || location.hostname !== 'web.sanguosha.com') return;
@@ -2627,7 +2949,10 @@ const ChannelCore = (() => {
         }
         return '';
       };
-    } catch (_) {}
+    } catch (error) {
+      reportFeedbackError(error, {flow: 'direct_event', stage: 'install_hook',
+        provider: CHANNEL.id, message: '直接登录事件接口安装失败'});
+    }
   }
   installDirectHook();
   try {
@@ -2962,7 +3287,7 @@ const ChannelCore = (() => {
       selected: selected ? accounts.ref(selected.profile) : '', currentProfileId, expectedProfileId, accountPhase, consumedLaunch, busy: !!active});
     if (!force && fingerprint === accountFingerprint) return;
     accountFingerprint = fingerprint; accountsView.replaceChildren();
-    accountsView.disabled = !profiles.length;
+    accountsView.setAttribute('aria-disabled', String(!profiles.length));
     profileChoices.clear();
     const groups = new Map();
     for (const item of data) {
@@ -2971,37 +3296,46 @@ const ChannelCore = (() => {
     }
     for (const [channelId, items] of groups) {
       const owner = ChannelRegistry.get(channelId);
-      const group = document.createElement('optgroup'); group.label = (owner?.name || channelId) + ' · ' + items.length + ' 个账号';
+      const group = document.createElement('div'); group.className = 'accounts-group'; group.setAttribute('role', 'group');
+      const groupTitle = document.createElement('div'); groupTitle.className = 'accounts-group-title';
+      groupTitle.textContent = (owner?.name || channelId) + ' · ' + items.length + ' 个账号';
+      group.setAttribute('aria-label', groupTitle.textContent); group.appendChild(groupTitle);
       for (const {profile, live} of items) {
         const ref = accounts.ref(profile); if (!ref) continue;
-        const option = document.createElement('option'); option.value = ref;
-        const state = profileAccountLabel(profile, live);
-        const role = profile.roleName && profile.roleName !== accounts.label(profile) ? ' · ' + profile.roleName : '';
-        const zone = ' · ' + profileZoneSummary(profile);
-        option.textContent = accounts.label(profile) + role + zone + ' · ' + state;
-        option.selected = selected?.profile.id === profile.id && selected?.profile.channelId === profile.channelId;
+        const option = document.createElement('button'); option.type = 'button'; option.className = 'account-choice';
+        option.dataset.ref = ref; option.setAttribute('role', 'option'); option.tabIndex = -1;
+        option.textContent = profileListText(profile, accounts.label(profile), live);
+        option.title = option.textContent;
+        option.setAttribute('aria-selected', String(selected?.profile.id === profile.id && selected?.profile.channelId === profile.channelId));
         group.appendChild(option); profileChoices.set(ref, {id: profile.id, channelId: profile.channelId});
       }
       accountsView.appendChild(group);
     }
-    accountsView.value = selected ? accounts.ref(selected.profile) : '';
     const profile = selected?.profile || null;
     const owner = profileChannel(profile);
     accountEdit.disabled = accountRemove.disabled = !profile;
     accountInspect.disabled = !profile;
     accountDetails.hidden = !profile || inspectingProfileId !== selectedProfileId;
-    accountDetailsText.value = profile ? [
+    const detailLines = profile ? [
       '所选账号：' + accounts.label(profile),
       '所属渠道：' + owner.name + '（游戏渠道号 ' + (owner.gameChannelId || '未配置') + '）',
       '游戏账号标识：' + profile.id,
       '游戏接入账号（account）：' + (profile.loginAccount || '尚未读取，请用新版重新授权一次'),
       owner.name + '游戏昵称：' + (profile.nickname || '未返回'),
-      '角色名：' + (profile.roleName || '尚未同步，进入游戏大厅后自动补充'),
-      '游戏用户 ID：' + (profile.roleId || '尚未同步，进入游戏大厅后自动补充'),
-      '区服：' + (profile.serverId || (profile.lastLoginAt ? '尚未同步，进入游戏大厅后自动补充' : '尚未记录，首次进入游戏后自动补充')),
-      '最近登录方式：' + lastLoginOptionLabel(profile),
-      '最近登录：' + (profile.lastLoginAt ? new Date(profile.lastLoginAt).toLocaleString('zh-CN', {hour12: false}) : '尚未确认')
-    ].join('\n') : '';
+      '角色名：' + (profile.roleName || '尚未同步，进入游戏大厅后自动补充')
+    ] : [];
+    if (profile) {
+      const gameId = profileGameId(profile);
+      if (gameId) detailLines.push('游戏内 ID：' + gameId);
+      const zone = profileZoneSummary(profile);
+      if (zone) detailLines.push(zone);
+      detailLines.push(
+        '最近登录方式：' + lastLoginOptionLabel(profile),
+        '最近登录：' + (profile.lastLoginAt
+          ? new Date(profile.lastLoginAt).toLocaleString('zh-CN', {hour12: false}) : '尚未确认')
+      );
+    }
+    accountDetailsText.value = detailLines.join('\n');
     accountEditor.hidden = !profile || editingProfileId !== selectedProfileId;
     accountRemove.textContent = removingProfileId === selectedProfileId && profile ? '确认移除所选记录' : '移除记录';
     accountOpen.disabled = !profile;
@@ -3041,6 +3375,7 @@ const ChannelCore = (() => {
 
   // Read and delete the one-navigation handoff synchronously, before official game initialization.
   if (location.pathname === '/x/pc/index.php') {
+    beginDiagnosticFlow('game_handoff', 'launch_init');
     let saved;
     try {
       const raw = sessionStorage.getItem(LAUNCH);
@@ -3084,7 +3419,14 @@ const ChannelCore = (() => {
         consumedLaunch = true;
         status(CHANNEL.shortName + '启动参数已接入，正在加载官网电脑端游戏…');
       }
-    } catch (error) { setAccountPhase('failed'); heartbeat(); status(error.message === '脚本启动偏晚，请重新登录并检查油猴注入设置' ? error.message : CHANNEL.shortName + '接入初始化失败，请重新授权；若重复出现，请导出诊断。'); }
+    } catch (error) {
+      reportFeedbackError(error, {flow: 'game_handoff', stage: 'launch_init', provider: CHANNEL.id,
+        traceId: diagnosticTraceId, message: '游戏启动参数接入初始化失败：'
+          + (error instanceof Error ? error.message : '未知错误')});
+      setAccountPhase('failed'); heartbeat();
+      status(error.message === '脚本启动偏晚，请重新登录并检查油猴注入设置' ? error.message
+        : CHANNEL.shortName + '接入初始化失败，请重新授权；若重复出现，请导出诊断。');
+    }
     saved = null;
   } else if (location.pathname === '/10/pc/index.php' || location.pathname === '/10/pc/bilibiliWD_index.php') {
     // The embedded direct engine owns this navigation handoff. Read only the
@@ -3192,11 +3534,13 @@ const ChannelCore = (() => {
     const option = preferredLoginOption(profile, {...options, provider});
     const context = {direct: true, browser: false, automatic: !!options.automatic,
       provider, profileId: profile.id, clientToken: randomId(),
+      traceId: beginDiagnosticFlow('saved_login', 'wait_engine'),
       loginOptionId: option?.id || profile.lastLoginOption || '', loginProvider: provider,
       loginMethod: '已保存的官方登录状态', controller: new AbortController(),
       unsub: null, popup: null, lastDirectText: '', resume: true};
     active = context; busy(true);
     try {
+      markDiagnosticStage('wait_engine');
       const api = await waitDirectApi(context.controller.signal);
       if (context.controller.signal.aborted) throw new Error('已取消');
       if (typeof api.resume !== 'function') throw new Error('当前登录引擎不支持账号直登，请刷新页面后重试');
@@ -3206,8 +3550,9 @@ const ChannelCore = (() => {
         if (snapshot?.error) context.directError = snapshot.error;
       });
       status('正在恢复' + accounts.label(profile) + '的本地官方登录状态…');
+      markDiagnosticStage('resume_session');
       const resumed = await api.resume({profileId: profile.id, provider, required: true,
-        clientToken: context.clientToken, saveSession: saveLoginInfoEnabled()});
+        clientToken: context.clientToken, traceId: context.traceId, saveSession: saveLoginInfoEnabled()});
       if (context.controller.signal.aborted) throw new Error('已取消');
       if (!resumed) throw new Error('SAVED_SESSION_NOT_FOUND');
       if (context.directError) throw new Error(directErrorText(context.directError));
@@ -3220,8 +3565,14 @@ const ChannelCore = (() => {
       setLoginPanelCollapsed(true);
       status('登录状态已恢复，正在直接进入游戏…');
       if (typeof api.enter !== 'function') throw new Error('登录引擎未提供进入游戏接口');
+      markDiagnosticStage('game_entry');
       await api.enter();
     } catch (error) {
+      if (!cancellationError(error, context) && !context.directError && !error?.code) reportFeedbackError(error, {
+        flow: 'saved_login', stage: context.directError?.stage || 'resume_session',
+        provider: context.provider, traceId: context.traceId,
+        message: error?.message ? '账号直登失败：' + error.message : '账号直登失败'
+      });
       if (active === context) {
         const message = error instanceof Error ? error.message : '';
         const directFailure = {code: error?.code, stage: error?.stage,
@@ -3326,7 +3677,7 @@ const ChannelCore = (() => {
       else expectedProfileId = '';
     }
     const context = {direct: true, browser: browserMode, provider, clientToken: randomId(),
-      profileId,
+      profileId, traceId: beginDiagnosticFlow('direct_login', 'setup'),
       automatic: !!runOptions.automatic, loginOptionId: option.id || '', loginProvider: provider,
       loginMethod: loginOptionMethod(option),
       controller: new AbortController(), unsub: null, lastDirectText: '', popup: null, browserNonce, vivoNonce};
@@ -3349,6 +3700,7 @@ const ChannelCore = (() => {
           ['sgs-vivo-page-result-v1:' + browserNonce, 'sgs-oppo-page-result-v1:' + browserNonce,
             'sgs-steam-page-result-v1:' + browserNonce]);
       }
+      markDiagnosticStage('wait_engine');
       const api = await waitDirectApi(context.controller.signal);
       if (context.controller.signal.aborted) throw new Error('已取消');
       context.unsub = api.subscribe(snapshot => {
@@ -3361,7 +3713,8 @@ const ChannelCore = (() => {
           ? '请在 Steam 官方页面完成扫码、账号密码或 Steam Guard 登录，脚本会自动继续。'
           : '请在' + CHANNEL.name + '官方登录窗口完成账号密码、手机验证码或扫码登录，脚本会自动继续。'
         : '正在启动' + CHANNEL.name + '官方扫码登录…');
-      await api.start(context.provider, {clientToken: context.clientToken, saveSession: saveLoginInfoEnabled(),
+      markDiagnosticStage('provider_login');
+      await api.start(context.provider, {clientToken: context.clientToken, traceId: context.traceId, saveSession: saveLoginInfoEnabled(),
         ...(context.profileId ? {profileId: context.profileId} : {}),
         ...(browserMode ? {mode: 'browser', nonce: browserNonce, ...(browserState ? {state: browserState} : {})} : {})});
       if (context.controller.signal.aborted) throw new Error('已取消');
@@ -3374,8 +3727,14 @@ const ChannelCore = (() => {
       setLoginPanelCollapsed(true);
       status(browserMode ? CHANNEL.name + '官方网页登录完成，正在进入游戏…' : CHANNEL.name + '授权完成，正在进入游戏…');
       finishLoginSurface(context);
+      markDiagnosticStage('game_entry');
       if (typeof api.enter === 'function') await api.enter();
     } catch (error) {
+      if (!cancellationError(error, context) && !context.directError && !error?.code) reportFeedbackError(error, {
+        flow: 'direct_login', stage: context.directError?.stage || 'provider_login',
+        provider: context.provider, traceId: context.traceId,
+        message: error?.message ? '直接登录失败：' + error.message : '直接登录失败'
+      });
       if (active === context) {
         setLoginPanelCollapsed(false);
         status(context.popupClosed ? '已关闭' + CHANNEL.name + '官方登录窗口，本次登录已取消；可重新选择登录方式。'
@@ -3413,7 +3772,11 @@ const ChannelCore = (() => {
   function openOfficial(option, runOptions = {}) {
     let url;
     try { url = safeOfficialURL(option.page || CHANNEL.accountPage); }
-    catch (error) { return status(error.message); }
+    catch (error) {
+      reportFeedbackError(error, {flow: 'official_page', stage: 'validate_url',
+        provider: CHANNEL.id, message: '官方登录页地址校验失败'});
+      return status(error.message);
+    }
     const features = isPortalChannel ? 'width=1180,height=900,resizable=yes,scrollbars=yes' : 'width=560,height=780';
     const popup = window.open(url.href, 'sgs-' + CHANNEL.id + '-official-login', features);
     if (!popup) return status(runOptions.automatic
@@ -3464,6 +3827,7 @@ const ChannelCore = (() => {
     if (entryError) return status('账号窗口入口已过期，请从账号列表重新打开。');
     duplicateRetry = null;
     const context = {state: randomId(), controller: new AbortController(), popup: null, accept: null,
+      traceId: beginDiagnosticFlow('authorization', 'callback_wait'),
       automatic: !!runOptions.automatic, loginOptionId: optionId, loginProvider: CHANNEL.id, loginMethod: '官方授权'};
     active = context; busy(true);
     GM_setValue(pendingKey(context.state), {expires: Date.now() + 10 * 60 * 1000});
@@ -3490,6 +3854,7 @@ const ChannelCore = (() => {
         : '请在新窗口完成' + CHANNEL.name + '官方授权；完成后会自动回到游戏接入流程。');
       let code = await waiting;
       if (context.popup) { try { context.popup.close(); } catch (_) {} }
+      markDiagnosticStage('channel_connect');
       const args = await ChannelCore.connect(code, status, context.controller.signal, async identity => {
         const targetProfileId = expectedProfileId || (typeof retryProfileId === 'string' ? retryProfileId : null);
         if (targetProfileId && !sameAccountIdentity(identity.id, targetProfileId)) throw new Error('授权账号与所选账号不一致，已停止接入。请先点“切换' + CHANNEL.name + '账号”换号，再授权。');
@@ -3516,10 +3881,15 @@ const ChannelCore = (() => {
       // A tab-scoped, one-use handoff; no credentials in query strings or persistent GM storage.
       sessionStorage.setItem(LAUNCH, JSON.stringify({channelId: CHANNEL.id, expires: Date.now() + 60000, args, profileId: currentProfileId}));
       status(CHANNEL.shortName + '登录准备完成，正在打开官网游戏…');
+      markDiagnosticStage('game_handoff');
       location.assign(GAME);
     } catch (error) {
       const message = context.popupClosed ? '已关闭' + CHANNEL.name + '官方授权窗口，本次登录已取消；可重新选择登录方式。'
         : error instanceof Error ? error.message : '';
+      if (!cancellationError(error, context)) reportFeedbackError(error, {
+        flow: 'authorization', stage: 'channel_connect', provider: context.loginProvider,
+        traceId: context.traceId, message: message ? '官方授权失败：' + message : '官方授权失败'
+      });
       const trusted = message.startsWith(CHANNEL.name) || /^(游卡|官方接口|浏览器拦截|请求地址|不是本次|授权校验|授权账号|该账号|账号标识|未取得|SDK 响应|已取消|启动参数|未知登录渠道)/.test(message);
       if (active === context) {
         if (accountPhase === 'authorizing') { setAccountPhase('failed'); heartbeat(); }
@@ -3538,7 +3908,12 @@ const ChannelCore = (() => {
     try {
       const data = ChannelCore.callback(raw, active.state, CHANNEL.id);
       active.accept({...data, expires: Date.now() + 30000});
-    } catch (error) { status(/^(不是本次|授权校验|未取得)/.test(error.message) ? error.message : '回调地址格式不正确，请复制' + CHANNEL.name + '授权后地址栏的完整地址。'); }
+    } catch (error) {
+      reportFeedbackError(error, {flow: 'authorization', stage: 'manual_callback',
+        provider: active.loginProvider, traceId: active.traceId,
+        message: '手动回调解析失败：' + (error instanceof Error ? error.message : '未知格式')});
+      status(/^(不是本次|授权校验|未取得)/.test(error.message) ? error.message : '回调地址格式不正确，请复制' + CHANNEL.name + '授权后地址栏的完整地址。');
+    }
   }
   window.addEventListener('pagehide', () => {
     clearInterval(accountRefresh); clearInterval(gameAccountRefresh); accounts.release(instanceId); GM_removeValueChangeListener(focusListener); GM_removeValueChangeListener(presenceListener);
@@ -3646,11 +4021,15 @@ const ChannelCore = (() => {
         .account-actions{display:grid;grid-template-columns:1fr 1fr;gap:7px}.account-actions .account-open{grid-column:1/-1}.account-actions>button:last-child{grid-column:1/-1}
         input,textarea,select{width:100%;font:inherit;background:var(--field-strong);color:var(--text);padding:9px 10px;border:1px solid var(--separator);border-radius:var(--control-radius)}input::placeholder,textarea::placeholder{color:var(--text-tertiary)}input[type="checkbox"]{width:auto;accent-color:var(--accent)}
         .account-info{display:block;margin:8px 0;white-space:pre-line;overflow-wrap:anywhere;font-size:11px;line-height:1.65;color:var(--text-secondary)}
-        .accounts{display:block;width:100%;height:136px;overflow:auto;margin:8px 0;background:var(--field-strong);color:var(--text);border:1px solid var(--separator);border-radius:var(--control-radius);font:12px/1.55 var(--font)}
-        .accounts option{padding:6px 8px;border-radius:8px}.accounts option:checked{background:var(--accent);color:#fff}.account-editor input{margin-top:7px;font-size:12px}.account-editor button{margin:7px 5px 0 0}
+        .accounts{display:block;width:100%;height:154px;overflow:auto;margin:8px 0;padding:4px 0;background:var(--field-strong);color:var(--text);border:1px solid var(--separator);border-radius:var(--control-radius);font:12px/1.55 var(--font);scrollbar-width:thin;scrollbar-color:var(--field) transparent}
+        .accounts[aria-disabled="true"]{opacity:.5;pointer-events:none}.accounts-group{display:block;width:100%}.accounts-group-title{padding:6px 12px 3px;font-size:9px;font-weight:650;line-height:1.4;color:var(--text-tertiary);letter-spacing:.02em}
+        .account-choice{display:block;width:100%;min-height:32px;margin:0;padding:6px 12px;border:0;border-radius:0;background:transparent;color:var(--text);box-shadow:none;text-align:left;font:12px/1.45 var(--font);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transform:none}
+        .account-choice:hover{background:var(--field);color:var(--text)}.account-choice:active{transform:none;background:var(--field-strong);color:var(--text)}
+        .account-choice[aria-selected="true"],.account-choice[aria-selected="true"]:hover,.account-choice[aria-selected="true"]:active{background:var(--accent);color:#fff}
+        .account-editor input{margin-top:7px;font-size:12px}.account-editor button{margin:7px 5px 0 0}
         .record-count{display:inline-flex;align-items:center;justify-content:center;height:20px;margin-left:2px;padding:0 7px;border-radius:99px;background:var(--field-strong);color:var(--text-tertiary);font-size:9px;font-weight:550;line-height:20px;font-variant-numeric:tabular-nums;box-sizing:border-box;flex:0 0 auto}.record-tools{display:flex;flex-wrap:wrap;gap:6px;padding:0 11px 9px}.record-tools button{flex:1 1 calc(50% - 6px);font-size:10px;padding:5px 6px}.record-list{list-style:none;padding:0 11px 0 20px;margin:0 0 11px;max-height:220px;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--field-strong) transparent}
         .record-item{position:relative;border-left:1px solid var(--separator);padding:0 8px 14px 13px;margin:0}.record-item:before{content:"";position:absolute;left:-4px;top:7px;width:7px;height:7px;border-radius:50%;background:var(--text-tertiary);border:2px solid var(--panel-solid)}.record-item:last-child{padding-bottom:0;border-left-color:transparent}.record-item.error:before{background:var(--danger)}.record-item.warning:before{background:var(--warning)}.record-item.success:before{background:var(--success)}.record-item.is-current.progress:before{background:var(--accent);box-shadow:0 0 0 3px rgba(10,132,255,.16)}
-        .record-meta{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:var(--text-tertiary);font-variant-numeric:tabular-nums}.record-badge{font-size:9px;color:var(--text-tertiary)}.record-item.is-current .record-badge{color:var(--accent)}.record-item.error .record-badge,.record-item.error .record-message{color:var(--danger)}.record-item.success .record-badge{color:var(--success)}.record-message{margin-top:3px;font-size:11px;line-height:1.7;color:var(--text-secondary);overflow-wrap:anywhere}.record-item.is-current .record-message{color:var(--text)}.record-empty{padding:9px 0 13px;font-size:11px;line-height:1.7;color:var(--text-tertiary)}
+        .record-meta{display:flex;align-items:center;justify-content:space-between;font-size:10px;color:var(--text-tertiary);font-variant-numeric:tabular-nums}.record-badge{font-size:9px;color:var(--text-tertiary)}.record-item.is-current .record-badge{color:var(--accent)}.record-item.error .record-badge,.record-item.error .record-message{color:var(--danger)}.record-item.success .record-badge{color:var(--success)}.record-message{margin-top:3px;font-size:11px;line-height:1.7;color:var(--text-secondary);overflow-wrap:anywhere}.record-item.is-current .record-message{color:var(--text)}.record-empty{padding:9px 0 13px;font-size:11px;line-height:1.7;color:var(--text-tertiary)}.record-detail{margin-top:4px;font-size:9px;line-height:1.55;color:var(--text-tertiary)}.record-detail summary{cursor:pointer;overflow-wrap:anywhere}.record-detail pre{margin:5px 0 0;padding:7px;border-radius:8px;background:rgba(0,0,0,.18);color:var(--text-secondary);font:9px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px;overflow:auto}
         .panel-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-top:12px}.panel-footer small{color:var(--text-tertiary);font-size:10px}.panel-footer button{font-size:10px}.panel-footer-actions{display:flex;gap:5px;flex:0 0 auto}.manual-entry{margin:10px 0}.manual-entry small{display:block;margin-bottom:7px;font-size:11px;line-height:1.6;color:var(--text-secondary)}.manual-entry button{margin-top:7px}.cancel-login{width:100%;margin-top:8px}
         .credit-note{margin:10px 0 0;padding:9px 11px;border:1px solid var(--separator);border-radius:12px;background:var(--field);font-size:10px;line-height:1.75;color:var(--text-tertiary);overflow-wrap:anywhere}.credit-note strong{display:block;margin-bottom:2px;font-weight:650;color:var(--text-secondary)}.credit-note a{color:var(--accent);text-decoration:none}.credit-note a:hover{text-decoration:underline}
         .security-note{margin-top:10px;border:1px solid var(--separator);border-radius:14px;background:var(--field);overflow:hidden}.security-note summary{padding:9px 11px;font-size:10px;font-weight:650;color:var(--text-secondary)}.security-note .security-body{padding:0 11px 11px;font-size:10px;line-height:1.7;color:var(--text-tertiary)}.security-note pre{margin:7px 0 0;padding:8px;border-radius:9px;background:rgba(0,0,0,.18);color:var(--text-secondary);font:9px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -3843,14 +4222,34 @@ const ChannelCore = (() => {
         if (!popup) return status('浏览器拦截了' + CHANNEL.name + '账号窗口，请允许弹出窗口后重试。');
         popup.opener = null; status('请在' + CHANNEL.name + '官方账号页自行换号，完成后回到所选窗口重新授权。');
       }; accountToolbar.appendChild(switchAccountButton);
-      accountsView = document.createElement('select'); accountsView.className = 'accounts'; accountsView.size = 5;
+      accountsView = document.createElement('div'); accountsView.className = 'accounts';
+      accountsView.setAttribute('role', 'listbox'); accountsView.tabIndex = 0;
       accountsView.setAttribute('aria-label', '选择要管理的账号');
-      accountsView.onchange = () => {
-        const parsed = accounts.parseRef(accountsView.value);
+      const chooseAccount = ref => {
+        const parsed = accounts.parseRef(ref);
         selectedProfileId = parsed?.id || null;
         selectedProfileChannelId = parsed?.channelId || CHANNEL.id;
         editingProfileId = removingProfileId = inspectingProfileId = null; renderAccounts(true);
-      }; managerBody.appendChild(accountsView);
+      };
+      accountsView.addEventListener('click', event => {
+        const choice = event.target?.closest?.('.account-choice');
+        if (!choice || !accountsView.contains(choice)) return;
+        chooseAccount(choice.dataset.ref || '');
+      });
+      accountsView.addEventListener('keydown', event => {
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+        const choices = [...accountsView.querySelectorAll('.account-choice')];
+        if (!choices.length) return;
+        event.preventDefault();
+        let index = choices.findIndex(choice => choice.getAttribute('aria-selected') === 'true');
+        if (event.key === 'Home') index = 0;
+        else if (event.key === 'End') index = choices.length - 1;
+        else index = index < 0 ? (event.key === 'ArrowDown' ? 0 : choices.length - 1)
+          : (index + (event.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length;
+        chooseAccount(choices[index].dataset.ref || '');
+        accountsView.focus();
+      });
+      managerBody.appendChild(accountsView);
       accountInfo = document.createElement('small'); accountInfo.className = 'account-info'; managerBody.appendChild(accountInfo);
       const accountActions = document.createElement('div'); accountActionsNode = accountActions; accountActions.className = 'account-actions'; managerBody.appendChild(accountActions);
       accountOpen = document.createElement('button'); accountOpen.className = 'minor account-open';
@@ -3924,7 +4323,7 @@ const ChannelCore = (() => {
       historyFilterButton.onclick = () => { errorsOnly = !errorsOnly; renderHistory(); }; recordTools.appendChild(historyFilterButton);
       historyClearButton = document.createElement('button'); historyClearButton.className = 'minor'; historyClearButton.textContent = '清空日志';
       historyClearButton.title = '清空当前页记录与本机反馈日志，不影响账号或登录';
-      historyClearButton.onclick = () => { log.length = 0; errorsOnly = false; feedbackLog.clear(); renderHistory(); }; recordTools.appendChild(historyClearButton);
+      historyClearButton.onclick = () => { errorsOnly = false; feedbackLog.clear(); renderHistory(); }; recordTools.appendChild(historyClearButton);
       logNode = document.createElement('ol'); logNode.className = 'record-list'; logNode.setAttribute('aria-label', '运行记录，最新在前');
       const copyFeedback = document.createElement('button'); copyFeedback.className = 'minor'; copyFeedback.textContent = '复制反馈日志';
       copyFeedback.onclick = () => copyFeedbackReport(); recordTools.appendChild(copyFeedback);
@@ -3986,7 +4385,7 @@ const ChannelCore = (() => {
 /* DIRECT-ENGINE-BEGIN */
 (() => {
   'use strict';
-  const VERSION = '1.2.0';
+  const VERSION = '1.3.0';
   const ORIGIN = 'https://web.sanguosha.com';
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
   const SESSION_KEY = 'wegame.qq.session.v1';
@@ -4102,8 +4501,21 @@ const ChannelCore = (() => {
   const EMBEDDED = page.__JND_HOST?.source === 'sgs-multichannel';
   if (location.origin !== ORIGIN || window.top !== window) return;
 
+  let diagnosticTraceId = '';
+  let diagnosticProvider = '';
+  function reportDiagnostic(detail = {}) {
+    const payload = {source: 'direct-engine', version: VERSION,
+      traceId: diagnosticTraceId, provider: diagnosticProvider, ...detail};
+    try {
+      if (typeof page.__SGS_DIAGNOSTIC__ === 'function') return page.__SGS_DIAGNOSTIC__(payload);
+      page.dispatchEvent(new CustomEvent('sgs-unified-diagnostic-v1', {detail: payload}));
+    } catch (_) {}
+  }
   function failure(code, stage) {
-    return Object.assign(new Error(code), {stage});
+    const error = Object.assign(new Error(code), {code, stage});
+    reportDiagnostic({level: /(?:CANCELLED|EXPIRED)$/.test(code) ? 'warning' : 'error',
+      message: '直接登录失败：' + code, code, stage, errorName: error.name, stack: error.stack});
+    return error;
   }
   function assert(ok, code, stage) { if (!ok) throw failure(code, stage); }
   function fields(value, keys, stage) {
@@ -4158,19 +4570,21 @@ const ChannelCore = (() => {
     return result;
   }
   function gameAuthFields() {
-    let self = null, user = null;
+    let self = null, user = null, userBrief = null;
     try {
       self = page.AccountInfo?.Self || page.AccountInfo?.self || null;
       user = page.UserData?.Self || page.UserData?.self || null;
+      userBrief = user?.UserBrief || user?.userBrief || null;
     } catch (_) {}
     const first = (sources, names) => {
       for (const source of sources) {
         if (!source || typeof source !== 'object') continue;
         for (const name of names) {
           const value = source[name];
-          if ((typeof value === 'string' || typeof value === 'number') && String(value).trim()) {
-            return String(value).replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 256);
-          }
+          if (typeof value !== 'string' && typeof value !== 'number') continue;
+          const text = String(value).replace(/[\x00-\x1f\x7f]/g, '').trim();
+          if (!text || text === '0' || /^(?:null|undefined|false)$/i.test(text)) continue;
+          return text.slice(0, 256);
         }
       }
       return '';
@@ -4178,8 +4592,8 @@ const ChannelCore = (() => {
     const fields = {};
     for (const [name, value] of [
       ['serverId', first([self, user], ['SeverID', 'ServerID', 'ServerId', 'serverId', 'server_id'])],
-      ['roleId', first([self, user], ['UserId', 'UserID', 'userId', 'RoleId', 'RoleID', 'roleId'])],
-      ['roleName', first([user, self], ['Nickname', 'NickName', 'nickname', 'UserName'])],
+      ['roleId', first([userBrief, user, self], ['userID', 'UserId', 'UserID', 'userId', 'RoleId', 'RoleID', 'roleId'])],
+      ['roleName', first([userBrief, user, self], ['nickname', 'Nickname', 'NickName', 'UserName', 'userName'])],
       ['loginAccount', first([self], ['Account'])],
       ['channelAccount', first([self], ['ChannelAccount'])]
     ]) if (value) fields[name] = value;
@@ -4292,7 +4706,7 @@ const ChannelCore = (() => {
         ['authHandler(e){let t=e.Protocol;',
           "authHandler(e){let t=e.Protocol;try{window.__SGS_DIRECT_EVENT__({type:'game-auth',provider:'xiaomi',success:Number(t.errCode)===0,code:String(Number(t.errCode)||0)})}catch(_){}"],
         ['notifyUserData(e){let t=e.Protocol;if(t.finished){',
-          "notifyUserData(e){let t=e.Protocol;if(t.finished){try{const a=AccountInfo.Self||{};window.__SGS_DIRECT_EVENT__({type:'game-auth',provider:'xiaomi',success:true,serverId:String(a.SeverID||''),loginAccount:String(a.Account||''),channelAccount:String(a.ChannelAccount||'')})}catch(_){}"]
+          "notifyUserData(e){let t=e.Protocol;if(t.finished){try{const u=UserData.Self||{},b=u.UserBrief||{},a=AccountInfo.Self||{};window.__SGS_DIRECT_EVENT__({type:'game-auth',provider:'xiaomi',success:true,roleName:String(b.nickname||u.Nickname||''),roleId:String(b.userID||u.userID||u.UserId||''),serverId:String(a.SeverID||''),loginAccount:String(a.Account||''),channelAccount:String(a.ChannelAccount||'')})}catch(_){}"]
       ];
       for (const [find, replacement] of markers) {
         if (source.split(find).length === 2) source = source.replace(find, replacement);
@@ -7744,6 +8158,9 @@ const ChannelCore = (() => {
     const provider = sessionText(options.provider, 32);
     const profileId = sessionText(options.profileId, 256);
     const required = options.required === true;
+    diagnosticTraceId = typeof options.traceId === 'string' && /^[A-Za-z0-9._:-]{1,80}$/.test(options.traceId)
+      ? options.traceId : random().slice(0, 16);
+    diagnosticProvider = provider;
     let saved = savedSession(provider, profileId);
     if (!saved && profileId) {
       saved = sessionRecords().map(item => item.record)
@@ -8127,6 +8544,9 @@ const ChannelCore = (() => {
   async function start(provider = 'qq', options = {}) {
     const mode = ['vivo', 'oppo', 'steam'].includes(provider) && options?.mode === 'browser' ? 'browser' : 'qr';
     assert(['qq', 'wx', 'bilibili', 'steam', 'oppo', 'xiaomi', 'vivo', 'huawei'].includes(provider), 'PROVIDER_UNAVAILABLE', 'setup');
+    diagnosticTraceId = typeof options?.traceId === 'string' && /^[A-Za-z0-9._:-]{1,80}$/.test(options.traceId)
+      ? options.traceId : random().slice(0, 16);
+    diagnosticProvider = provider;
     const profileId = sessionText(options?.profileId, 256);
     if (profileId) assert(SESSION_PROFILE_PATTERN.test(profileId), 'PROFILE_ID_INVALID', 'setup');
     const saveSession = options?.saveSession !== false;
