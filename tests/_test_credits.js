@@ -14,7 +14,7 @@ const sourceUrl = 'https://github.com/Clarrycy/jinnangmiaoji/blob/main/jinnangda
 
 assert(main.includes('// @author       @暗鹊（第一作者；《统一登录器》原始源码）'), 'metadata must credit @暗鹊 as first author');
 assert(main.includes('// @author       softbad123（维护者）'), 'metadata must identify the maintainer');
-assert(main.includes('// @version      1.1.2'), 'metadata version must be 1.1.2');
+assert(main.includes('// @version      1.1.3'), 'metadata version must be 1.1.3');
 assert(main.includes('第一作者与源码来源'), 'panel must show a source-credit heading');
 assert(main.includes('谨向 @暗鹊 致以诚挚感谢'), 'panel must thank @暗鹊');
 assert(main.includes(sourceUrl), 'panel must link to the pinned upstream source');

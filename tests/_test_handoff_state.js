@@ -27,13 +27,15 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function makeHarness({ provider = 'vivo', channel = 320056, path = '/10/pc/index.php',
   search = '?channel_id=320056', exportAt = 0, parseConfiged = true, preloaded = true,
   callbackReenters = true, callbackArgs = [true], entryBeforeReady = false,
-  callbackSetsCredential = true } = {}) {
+  callbackSetsCredential = true, platformIdOnly = false } = {}) {
   const calls = [];
   const entries = [];
   const events = [];
   const logouts = [];
   let handoff = 0;
-  const accountInfo = {Self: {Token: '', Ticket: ''}};
+  const accountInfo = {Self: platformIdOnly
+    ? {PlatformID: '326', Token: '', Ticket: '', WeGameTicket: ''}
+    : {Token: '', Ticket: ''}};
   const gameContext = {
     GotoLogout() { logouts.push(Date.now()); }
   };
@@ -57,6 +59,7 @@ function makeHarness({ provider = 'vivo', channel = 320056, path = '/10/pc/index
   let tick = null;
   const context = {
     EMBEDDED: true, SESSION_KEY: 'saved', page,
+    GAME_HANDOFF_TIMEOUT: 240000, ENTRY_GUARD_TTL: 60000,
     boundClientToken: '',
     provider, channel, grant: {account: 'A', token: 'T', sign: 'S', timestamp: Date.now()},
     savedId: 'a'.repeat(32),
@@ -66,6 +69,8 @@ function makeHarness({ provider = 'vivo', channel = 320056, path = '/10/pc/index
     handoffToast: () => {},
     setInterval: callback => { tick = callback; return 1; },
     clearInterval: () => { tick = null; },
+    setTimeout: () => 1,
+    clearTimeout: () => {},
     window: {addEventListener: () => {}},
     savedSession: () => null,
     assert: (ok, code, stage) => {
@@ -155,6 +160,22 @@ function assert(ok, message) { if (!ok) throw new Error(message); }
     'entry must wait for AccountInfo credentials');
   assert(noCredential.logouts.length === 0, 'missing AccountInfo credential was allowed to log out');
 
+  // Official EnterLoginScene accepts Token/Ticket/WeGameTicket only. A bare
+  // PlatformID from the WeGame shell is not an authenticated web credential;
+  // treating it as one lets GotoLogout escape and reproduces the loading-page
+  // bounce. A late credential write must still be able to enter afterwards.
+  const platformIdOnly = makeHarness({callbackSetsCredential: false, platformIdOnly: true});
+  assert(platformIdOnly.calls.length === 1, 'PlatformID-only harness did not receive the grant');
+  assert(platformIdOnly.entries.length === 0,
+    'PlatformID alone was treated as a complete game credential');
+  assert(platformIdOnly.logouts.length === 0,
+    'PlatformID alone allowed the unauthenticated GotoLogout path');
+  platformIdOnly.page.AccountInfo.Self.Token = 'late-token';
+  platformIdOnly.game.EnterLoginScene(true);
+  assert(platformIdOnly.entries.length === 1 && platformIdOnly.entries[0][0] === true,
+    'late real credential did not allow the authenticated entry');
+  assert(platformIdOnly.logouts.length === 0, 'late real credential still logged out');
+
   let rejected = 0;
   try { makeHarness({search: '?channel_id=320023'}); } catch (_) { rejected += 1; }
   try { makeHarness({search: '?channel_id=320056&channel_id=320056'}); } catch (_) { rejected += 1; }
@@ -164,6 +185,7 @@ function assert(ok, message) { if (!ok) throw new Error(message); }
     normalCalls: normal.calls.length, normalEntries: normal.entries.length,
     earlyEntryCalls: deferredEntry.calls.length, fallbackEntries: noReentry.entries.length,
     lateExportCalls: lateExport.calls.length, replacementCalls: replaced.calls.length,
-    querylessCalls: noQuery.calls.length, rejectedQueries: rejected
+    querylessCalls: noQuery.calls.length, rejectedQueries: rejected,
+    platformIdEntries: platformIdOnly.entries.length, platformIdLogouts: platformIdOnly.logouts.length
   }, null, 2));
 })().catch(error => { console.error(error); process.exit(1); });

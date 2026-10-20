@@ -41,6 +41,7 @@ function run(name, channelId, callback, deferredExport = false) {
   if (callback && !deferredExport) page.Sgs = game;
   const context = {
     EMBEDDED: true, SESSION_KEY: 'saved', page,
+    GAME_HANDOFF_TIMEOUT: 240000, ENTRY_GUARD_TTL: 60000,
     Date, String, Number, Object, Set, URLSearchParams,
     location: {pathname: '/10/pc/index.php', search: '?channel_id=' + channelId},
     GM_getValue: () => null,
@@ -49,6 +50,8 @@ function run(name, channelId, callback, deferredExport = false) {
     assert: (ok, code, stage) => { if (!ok) { const e = new Error(code); e.stage = stage; throw e; } },
     setInterval: () => 1,
     clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
     console: {info: (...args) => logs.push(args), error: (...args) => logs.push(args)},
     window: {addEventListener: () => {}}
   };

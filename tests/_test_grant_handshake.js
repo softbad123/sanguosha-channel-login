@@ -96,6 +96,8 @@ function deliveryCase({ exportAt = 0, entryAt = -1, tickAfter = true }) {
   const context = contextFor({
     EMBEDDED: true,
     SESSION_KEY: 'saved',
+    GAME_HANDOFF_TIMEOUT: 240000,
+    ENTRY_GUARD_TTL: 60000,
     page,
     location: {pathname: '/10/pc/index.php', search: '?channel_id=320056'},
     GM_getValue: () => null,
@@ -103,6 +105,8 @@ function deliveryCase({ exportAt = 0, entryAt = -1, tickAfter = true }) {
     handoffToast: () => {},
     setInterval: callback => { tick = callback; return 1; },
     clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
     console: {info: () => {}, error: () => {}},
     window: {addEventListener: () => {}}
   });

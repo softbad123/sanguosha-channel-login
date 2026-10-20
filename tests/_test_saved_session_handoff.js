@@ -45,6 +45,8 @@ function makeHarness() {
   const savedId = 'a'.repeat(32);
   const context = {
     EMBEDDED: true,
+    GAME_HANDOFF_TIMEOUT: 240000,
+    ENTRY_GUARD_TTL: 60000,
     SESSION_PROVIDERS: new Set(['vivo']),
     SESSION_PROFILE_PATTERN: /^[A-Za-z0-9._:-]{1,256}$/,
     SESSION_RECORD_EXPIRES_FOREVER: Number.MAX_SAFE_INTEGER,
@@ -56,6 +58,8 @@ function makeHarness() {
     handoffToast: () => {},
     setInterval: () => 1,
     clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
     window: {addEventListener: () => {}},
     savedSession: () => null,
     assert: (ok, code, stage) => {

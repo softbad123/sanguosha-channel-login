@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const VERSION = '1.1.2';
+  const VERSION = '1.1.3';
   const ORIGIN = 'https://web.sanguosha.com';
   const SESSION_KEY = 'wegame.qq.session.v1';
   const SESSION_STORE_PREFIX = 'sgs-login-session-v3:';
@@ -10,7 +10,12 @@
   const HANDOFF_KEY = 'wegame.qq.handoff.v1';
   const EMBEDDED_HANDOFF_KEY = 'sgs-direct-handoff-v1';
   const EMBEDDED_HANDOFF_LIMIT = 65536;
-  const HANDOFF_TTL = 90000;
+  // Timeouts are upper bounds for slow networks, not fixed delays. Normal
+  // logins still complete as soon as the official handoff is ready.
+  const HANDOFF_TTL = 240000;
+  const GAME_HANDOFF_TIMEOUT = 240000;
+  const ENTRY_GUARD_TTL = 60000;
+  const DEFAULT_REQUEST_TIMEOUT = 60000;
   const TAB_KEY = 'wegame.qq.tab.v1';
   const STEAM_PENDING_KEY = 'unified.steam.pending.v1';
   const STEAM_APP = '6730F3F4';
@@ -687,21 +692,27 @@
     const getRequest = installGameRequest(channel, grant, stage);
     const hasCredential = () => {
       try {
-        const self = page.AccountInfo?.Self;
-        return !!(self && (self.Token || self.Ticket || self.WeGameTicket || self.PlatformID));
+        const self = page.AccountInfo?.Self || page.AccountInfo?.self;
+        // Mirror EnterLoginScene exactly. PlatformID is a WeGame shell hint,
+        // not one of the three fields the official scene gate accepts. Treating
+        // it as a credential lets the unauthenticated GotoLogout path run.
+        return !!(self && (self.Token || self.Ticket || self.WeGameTicket));
       } catch (_) { return false; }
     };
     let game = null, originalEntry = null, gate = null, fontGate = true, boundAt = 0;
     let complete = false, entryCalled = false, pendingEntry = false, platformCalled = false;
-    let platformCalledAt = 0, platformCallActive = false, deliveryAttempts = 0;
+    let platformCalledAt = 0, platformCallActive = false, grantDelivered = false;
     let exportInstalled = false, exported, candidateSeen = null;
     let logoutContext = null, logoutOriginal = null, logoutGate = null;
+    let sessionValidated = false, releaseTimer = 0, reported = false, handoffFinished = false;
     const previous = Object.getOwnPropertyDescriptor(page, 'Sgs');
-    const deadline = Date.now() + 120000;
+    const deadline = Date.now() + GAME_HANDOFF_TIMEOUT;
     handoffToast(label + ' 登录已收到，正在等待游戏就绪…');
     const readiness = () => gameReadiness(game, fontGate, boundAt);
     const isReady = () => readiness().ready;
     const report = (available, reason) => {
+      if (reported) return;
+      reported = true;
       let snapshot = {};
       try { snapshot = readiness(); } catch (_) {}
       console[available ? 'info' : 'error']('[统一登录器]',
@@ -710,11 +721,15 @@
         : label + ' 登录交接失败：' + (reason || '游戏未就绪'), !available);
       emitGameAuth(provider, available, available ? {} : {code: String(reason || 'GAME_HANDOFF_FAILED').slice(0, 160)});
     };
-    const current = (requireChannel = false) => {
+    const validateSavedSession = () => {
       const saved = savedSession(savedProvider, '', savedId);
       if (saved) assert(saved.id === savedId && saved.provider === savedProvider && saved.expires > Date.now(),
         'SAVED_SESSION_EXPIRED', stage);
       else assert(EMBEDDED && /^[a-f0-9]{32}$/.test(savedId), 'SAVED_SESSION_INVALID', stage);
+      sessionValidated = true;
+    };
+    const current = (requireChannel = false, revalidateSession = false) => {
+      if (!sessionValidated || revalidateSession) validateSavedSession();
       if (requireChannel || page.ReqObj?.channel_id !== undefined) {
         assert(String(page.ReqObj?.channel_id) === String(channel), 'PLATFORM_CHANNEL_MISMATCH', stage);
       }
@@ -735,14 +750,30 @@
     const finish = (available, reason) => {
       if (complete) return;
       complete = true; clearInterval(timer);
+      if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = 0; }
       if (game?.EnterLoginScene === gate) game.EnterLoginScene = originalEntry;
       restoreLogoutGate();
       restoreExport();
       try { options.cleanup?.(); } catch (_) {}
       if (available) {
         report(true);
-        try { finishHandoff(); } catch (_) {}
       } else if (reason) report(false, reason);
+    };
+    const finishHandoffOnce = () => {
+      if (handoffFinished) return;
+      handoffFinished = true;
+      try { finishHandoff(); } catch (_) {}
+    };
+    const settle = () => {
+      if (complete) return;
+      // The official callback has returned, but the game may still load a
+      // scene or rebind its globals. Keep the guards for one bounded grace
+      // period; successful server auth is never delayed by this timer.
+      report(true);
+      finishHandoffOnce();
+      if (releaseTimer) return;
+      clearInterval(timer);
+      releaseTimer = setTimeout(() => finish(true), ENTRY_GUARD_TTL);
     };
     const enterOriginal = (context, args) => {
       // A callback that did not actually populate AccountInfo must never be
@@ -759,7 +790,7 @@
       try {
         const result = originalEntry.apply(context, args);
         entryCalled = true; pendingEntry = false;
-        finish(true);
+        settle();
         return result;
       } catch (error) {
         finish(false, error.message);
@@ -767,14 +798,14 @@
       }
     };
     const invokePlatform = () => {
-      if (complete || platformCalled) return;
-      current(true);
+      if (complete || platformCalled || grantDelivered) return;
+      current(true, true);
       assert(typeof game?.platformLoginBack === 'function',
         'PLATFORM_GAME_CALLBACK_UNAVAILABLE', stage);
       platformCalled = true; platformCalledAt = Date.now(); platformCallActive = true;
-      deliveryAttempts += 1;
       try {
         callPlatformLoginBack(game, {code: 0, data: getRequest()});
+        grantDelivered = true;
       } catch (error) {
         platformCalled = false;
         throw error;
@@ -792,7 +823,8 @@
     // called EnterLoginScene.  The scene guard is a second, version-independent
     // place to stop that one unauthenticated redirect while this verified
     // handoff is still alive.  It never changes a successful login path and is
-    // removed as soon as the grant has been handed to the official callback.
+    // released after a bounded post-entry grace period, or immediately on
+    // navigation/timeout.
     const installLogoutGate = () => {
       if (complete) return;
       try {
@@ -825,14 +857,13 @@
       if (game && game.EnterLoginScene === gate) game.EnterLoginScene = originalEntry;
       game = candidate; originalEntry = game.EnterLoginScene; boundAt = Date.now();
       installLogoutGate();
-      platformCalled = false; platformCalledAt = 0; platformCallActive = false;
+      platformCalled = grantDelivered;
+      if (!grantDelivered) platformCalledAt = 0;
+      platformCallActive = false;
       entryCalled = false; pendingEntry = false;
       try { Object.defineProperty(game, '__sgsEntryContract', {configurable: true,
         value: Function.prototype.toString.call(originalEntry).slice(0, 4000)}); } catch (_) {}
-      try {
-        const entrySource = Function.prototype.toString.call(originalEntry);
-        fontGate = !entrySource.includes('[native code]') && entrySource.includes('fontLoaded');
-      } catch (_) { fontGate = true; }
+      fontGate = entryRequiresFont(game);
       gate = function (...args) {
         if (complete) return originalEntry.apply(this, args);
         const explicitResult = args[0] === true;
@@ -891,10 +922,11 @@
         }
         if (!platformCalled && isReady()) invokePlatform();
       } catch (error) { finish(false, error.message); }
-    }, 100);
+    }, 150);
     window.addEventListener('pagehide', () => {
       if (complete) return;
       complete = true; clearInterval(timer);
+      if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = 0; }
       if (game?.EnterLoginScene === gate) game.EnterLoginScene = originalEntry;
       restoreLogoutGate();
       restoreExport();
@@ -1487,7 +1519,7 @@
     const stage = options.stage || a.stage;
     const hosts = options.qq ? QQ_HOSTS : options.wx ? WX_HOSTS : options.oppo ? OPPO_HOSTS :
       options.vivo ? VIVO_HOSTS : API_HOSTS;
-    const timeout = options.timeout || 20000;
+    const timeout = options.timeout || DEFAULT_REQUEST_TIMEOUT;
     parseURL(url, hosts, stage);
     const started = performance.now();
     return new Promise((resolve, reject) => {
@@ -1802,7 +1834,7 @@
         // The initiating flow owns its cookies. Browser account cookies can
         // otherwise skip QR confirmation and redirect straight to OAuth.
         handle = GM_xmlhttpRequest({method: options.body === undefined ? 'GET' : 'POST', url, redirect: 'manual', anonymous: true,
-          timeout: Math.min(options.timeout || 20000, Math.max(1, a.expires - Date.now())), nocache: true,
+          timeout: Math.min(options.timeout || DEFAULT_REQUEST_TIMEOUT, Math.max(1, a.expires - Date.now())), nocache: true,
           responseType: image ? 'arraybuffer' : 'text', cookie: a.cookies.header(url),
           headers: {Accept: image ? 'image/png' : '*/*', 'Content-Type': options.json ? 'application/json' : 'application/x-www-form-urlencoded', ...options.headers},
           data: options.body === undefined ? undefined : options.raw ? options.body :
