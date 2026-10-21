@@ -34,6 +34,7 @@ const state = {
 const sandbox = {
   currentProfileId: 'vivo:account-1',
   expectedProfileId: '',
+  verifiedProfileId: 'vivo:account-1',
   gameIdentityCache: null,
   gameIdentityAppliedSignature: '',
   selectedProfileId: '',
@@ -62,7 +63,7 @@ const sandbox = {
   feedbackLog: {
     add(level, message, meta) { state.logs.push({level, message, meta}); }
   },
-  diagnosticMeta(extra) { return {version: '1.3.0', channelId: 'vivo', ...extra}; },
+  diagnosticMeta(extra) { return {version: '1.4.0', channelId: 'vivo', ...extra}; },
   Object, String, Number
 };
 vm.createContext(sandbox);
@@ -70,6 +71,12 @@ vm.runInContext([
   extractFunction(main, 'gameField'),
   extractFunction(main, 'gameIdentityReady'),
   extractFunction(main, 'gameIdentityFromEvent'),
+  extractFunction(main, 'accountIdentityKey'),
+  extractFunction(main, 'normalizedIdentityValue'),
+  extractFunction(main, 'normalizedAccountValue'),
+  extractFunction(main, 'profileGameId'),
+  extractFunction(main, 'gameIdentityBinding'),
+  extractFunction(main, 'resolveGameIdentityProfile'),
   extractFunction(main, 'applyGameIdentity')
 ].join('\n'), sandbox);
 

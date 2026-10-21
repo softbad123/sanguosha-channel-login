@@ -7,7 +7,7 @@
 // @supportURL   https://github.com/softbad123/sanguosha-channel-login/issues
 // @updateURL    https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
 // @downloadURL  https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
-// @version      1.3.0
+// @version      1.4.0
 // @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和账号管理直达。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
 // @match        https://web.sanguosha.com/*
 // @match        https://joint.vivo.com.cn/game-subaccount-login/*
@@ -1820,7 +1820,7 @@ const ChannelCore = (() => {
   const LEGACY_TRANSIENT_PROFILE_KEY = CHANNEL.contextPrefix + '-transient-profile-v1';
   const LOGIN_PAGE = 'https://web.sanguosha.com/login/10th_client/index.html';
   const PENDING_ACCOUNT_KEY = 'sgs-unified-pending-account-v1';
-  const VERSION = '1.3.0';
+  const VERSION = '1.4.0';
   const NETWORK_TIMEOUT = 60000;
   const GAME_ROUTE_PATTERN = /^\/(?:x|10|10th|login)\/pc\//;
   const OFFICIAL_LOGIN_ROUTE_PATTERN = /^\/login\/(?:10th_client|x)(?:\/index(?:\.html)?)?\/?$/;
@@ -2151,7 +2151,10 @@ const ChannelCore = (() => {
   let channelSelect, channelInfo, channelBadge, addAccountButton, switchAccountButton;
   let consumedLaunch = false;
   let panelHost = null;
-  let accounts = null, expectedProfileId = null, currentProfileId = null, accountPhase = 'waiting';
+  // `expectedProfileId` is only a UI preselection (including sessionStorage
+  // restoration). It must never be treated as proof of the game identity in
+  // this tab. Only `verifiedProfileId` may authorize writes to account records.
+  let accounts = null, expectedProfileId = null, currentProfileId = null, verifiedProfileId = null, accountPhase = 'waiting';
   let phaseStartedAt = Date.now(), duplicateRetry = null, retryLoginButton;
   let accountsView, currentAccountNode, accountCountNode, accountActionsNode, accountFingerprint = '', entryError = false;
   let selectedProfileId = null, selectedProfileChannelId = CHANNEL.id, accountInfo, accountOpen, accountEdit, accountRemove, accountEditor, aliasInput, zoneInput;
@@ -2370,6 +2373,40 @@ const ChannelCore = (() => {
     if (!identity.roleId && !identity.roleName && !identity.serverId) return null;
     return gameIdentityReady(identity) ? identity : null;
   }
+  function normalizedIdentityValue(value) {
+    return typeof value === 'string' || typeof value === 'number'
+      ? String(value).replace(/[\x00-\x1f\x7f]/g, '').trim().toLowerCase() : '';
+  }
+  function normalizedAccountValue(value) {
+    return normalizedIdentityValue(accountIdentityKey(String(value == null ? '' : value)));
+  }
+  // Classify observed game identity against a stored account. A conflict is
+  // decisive and must never be overwritten; `match` requires stable evidence,
+  // while `unknown` means the probe did not contain enough information.
+  function gameIdentityBinding(identity, profile) {
+    if (!identity || typeof identity !== 'object' || !profile || typeof profile !== 'object') {
+      return {status: 'unknown', fields: []};
+    }
+    const storedRoleId = normalizedIdentityValue(profileGameId(profile));
+    const observedRoleId = normalizedIdentityValue(identity.roleId);
+    if (storedRoleId && observedRoleId) {
+      return storedRoleId === observedRoleId
+        ? {status: 'match', fields: ['roleId']}
+        : {status: 'conflict', fields: ['roleId']};
+    }
+    const storedAccounts = [profile.id, profile.loginAccount, profile.channelAccount]
+      .map(normalizedAccountValue).filter(Boolean);
+    const observedAccounts = [identity.loginAccount, identity.channelAccount]
+      .map(normalizedAccountValue).filter(Boolean);
+    const accountMatch = observedAccounts.some(value => storedAccounts.includes(value));
+    if (accountMatch) return {status: 'match', fields: ['account']};
+    const compared = [
+      [profile.loginAccount, identity.loginAccount],
+      [profile.channelAccount, identity.channelAccount]
+    ].filter(pair => normalizedIdentityValue(pair[0]) && normalizedIdentityValue(pair[1]));
+    if (compared.length) return {status: 'conflict', fields: ['account']};
+    return {status: 'unknown', fields: []};
+  }
   function isGamePage() {
     return GAME_ROUTE_PATTERN.test(location.pathname);
   }
@@ -2420,39 +2457,56 @@ const ChannelCore = (() => {
   }
   function resolveGameIdentityProfile(identity) {
     if (!accounts) return null;
-    let tabProfile = '';
-    try { tabProfile = sessionStorage.getItem(ACCOUNT_CONTEXT) || ''; } catch (_) {}
-    const tabMatch = tabProfile ? profileById(tabProfile, CHANNEL.id) : null;
-    if (tabMatch) return tabMatch;
     const candidates = accounts.profiles(false);
     if (!candidates.length) return null;
-    let named = null;
-    try {
-      if (window.name) named = candidates.find(profile => profileName(profile) === window.name) || null;
-    } catch (_) {}
-    if (named) return named;
-    const identities = [identity.loginAccount, identity.channelAccount]
-      .filter(value => typeof value === 'string' && value.trim())
-      .map(value => accountIdentityKey(value).toLowerCase());
-    if (!identities.length) return null;
-    const matches = candidates.filter(profile => [profile.id, profile.loginAccount, profile.channelAccount]
-      .filter(Boolean)
-      .some(value => identities.includes(accountIdentityKey(value).toLowerCase())));
+    const observedRoleId = normalizedIdentityValue(identity?.roleId);
+    if (observedRoleId) {
+      const roleMatches = candidates.filter(profile =>
+        normalizedIdentityValue(profileGameId(profile)) === observedRoleId);
+      if (roleMatches.length) return roleMatches.length === 1 ? roleMatches[0] : null;
+    }
+    const matches = candidates.filter(profile => gameIdentityBinding(identity, profile).status === 'match');
     return matches.length === 1 ? matches[0] : null;
   }
   function applyGameIdentity(identity, meta = {}) {
     if (!gameIdentityReady(identity)) return false;
-    let id = currentProfileId || expectedProfileId;
-    let profile = id ? profileById(id, CHANNEL.id) : null;
+    // The tab context can survive reload/back navigation. It is a helpful
+    // preselection, but only a binding verified in this document may receive
+    // game identity data. Never let a stale channel record absorb an official
+    // or otherwise different account.
+    let profile = currentProfileId ? profileById(currentProfileId, CHANNEL.id) : null;
+    let rejectedProfile = null;
+    if (profile) {
+      const currentBinding = gameIdentityBinding(identity, profile);
+      if (currentBinding.status === 'conflict') {
+        rejectedProfile = profile;
+        profile = null;
+      } else if (currentBinding.status !== 'match' && verifiedProfileId !== profile.id) {
+        profile = null;
+      }
+    }
     if (!profile) {
       profile = resolveGameIdentityProfile(identity);
       if (profile) {
-        id = profile.id;
-        currentProfileId = expectedProfileId = profile.id;
+        currentProfileId = expectedProfileId = verifiedProfileId = profile.id;
         if (!profile.transient) selectProfile(profile);
         try { sessionStorage.setItem(ACCOUNT_CONTEXT, profile.id); } catch (_) {}
       }
+    } else {
+      expectedProfileId = verifiedProfileId = profile.id;
     }
+    if (!profile) {
+      const expected = expectedProfileId ? profileById(expectedProfileId, CHANNEL.id) : null;
+      if (expected && gameIdentityBinding(identity, expected).status === 'conflict') {
+        rejectedProfile = rejectedProfile || expected;
+      }
+      if (rejectedProfile) {
+        currentProfileId = expectedProfileId = verifiedProfileId = null;
+        setAccountPhase('waiting');
+        try { sessionStorage.removeItem(ACCOUNT_CONTEXT); } catch (_) {}
+      }
+    }
+    const id = profile?.id || '';
     const signature = [id || '', identity.serverId, identity.roleId, identity.roleName,
       identity.loginAccount, identity.channelAccount].join('|');
     if (signature === gameIdentityAppliedSignature) return true;
@@ -2462,6 +2516,7 @@ const ChannelCore = (() => {
     if (profile && (identity.roleId || identity.roleName || identity.serverId)) {
       setAccountPhase('connected');
       currentProfileId = profile.id;
+      expectedProfileId = verifiedProfileId = profile.id;
     }
     if (profile) {
       const changes = {lastLoginAt: Date.now()};
@@ -2478,8 +2533,15 @@ const ChannelCore = (() => {
         diagnosticMeta({...meta, flow: 'auto_collapse', stage: 'game_identity'}));
     } else {
       const label = identity.roleName || identity.roleId || '未知角色';
-      feedbackLog.add('warning', '已读取游戏角色「' + label + '」，但无法唯一匹配本地账号；请从账号管理打开该角色所属账号。',
-        diagnosticMeta({...meta, flow: 'auto_collapse', stage: 'game_identity'}));
+      if (rejectedProfile) {
+        feedbackLog.add('warning', '检测到游戏角色「' + label + '」与已选账号的身份记录冲突，已阻止写入账号管理并清除本标签页的残留绑定。',
+          diagnosticMeta({...meta, flow: 'auto_collapse', stage: 'game_identity_conflict'}));
+        status('检测到当前游戏账号与已选账号不一致，已阻止写入账号管理并清除本标签页的残留绑定。');
+      } else {
+        feedbackLog.add('warning', '已读取游戏角色「' + label + '」，但无法唯一匹配本地账号；请从账号管理打开该角色所属账号。',
+          diagnosticMeta({...meta, flow: 'auto_collapse', stage: 'game_identity'}));
+      }
+      updateAccountHeading(); renderAccounts(); heartbeat();
     }
     autoCollapseForLogin('检测到游戏账号资料，已自动折叠登录面板。', 'game_login',
       {...meta, source: meta.source || 'page_context_probe'});
@@ -3122,7 +3184,7 @@ const ChannelCore = (() => {
           const matchedId = expectedProfileId && sameAccountIdentity(expectedProfileId, id) ? expectedProfileId : id;
           const profile = rememberIdentity({id, nickname}, matchedId);
           if (!profile) return '';
-          currentProfileId = expectedProfileId = profile.id;
+          currentProfileId = expectedProfileId = verifiedProfileId = profile.id;
           active.profileId = profile.id;
           try { directApi()?.bindProfile?.(profile.id, eventToken, saveLoginInfoEnabled()); } catch (_) {}
           rememberLoginMetadata(profile.id, profile.channelId, active);
@@ -3152,8 +3214,27 @@ const ChannelCore = (() => {
           const accepted = provider === CHANNEL.id || (CHANNEL.id === 'wegame' && ['qq', 'wx'].includes(provider));
           if (!accepted) return '';
           const eventProfile = typeof event.profileId === 'string' ? profileById(event.profileId, CHANNEL.id) : null;
-          const profile = eventProfile || profileById(currentProfileId || expectedProfileId || '', CHANNEL.id);
+          const profile = eventProfile || profileById(verifiedProfileId || currentProfileId || '', CHANNEL.id);
           if (!profile) return '';
+          const gameIdentity = gameIdentityFromEvent(event);
+          if (gameIdentity) {
+            const binding = gameIdentityBinding(gameIdentity, profile);
+            if (binding.status === 'conflict') {
+              currentProfileId = expectedProfileId = verifiedProfileId = null;
+              setAccountPhase('waiting');
+              try { sessionStorage.removeItem(ACCOUNT_CONTEXT); } catch (_) {}
+              feedbackLog.add('warning', '游戏认证返回的角色身份与已选账号冲突，已阻止写入账号管理。',
+                diagnosticMeta({flow: 'direct_event', stage: 'game_identity_conflict',
+                  provider: CHANNEL.id, source: 'game-auth'}));
+              status('当前游戏账号与已选账号不一致，已阻止写入账号管理。');
+              renderAccounts();
+              return '';
+            }
+            if (binding.status !== 'match' && verifiedProfileId !== profile.id) {
+              status('当前游戏账号尚未完成身份核对，已阻止写入账号管理。');
+              return '';
+            }
+          }
           closeLoginPopup(active);
           if (event.success === false) {
             clearGameLoginSession();
@@ -3276,16 +3357,22 @@ const ChannelCore = (() => {
   function updateAccountHeading() {
     if (!accounts) return;
     const profile = profileById(currentProfileId || expectedProfileId);
+    // A restored account selection is useful in the panel, but it is not proof
+    // that this tab's game session belongs to that account. Only a verified
+    // binding may change the browser tab title.
+    const titleProfile = profile && verifiedProfileId === profile.id ? profile : null;
     const prefix = accountPhase === 'connected' ? '当前账号：'
       : ['authorizing', 'loading'].includes(accountPhase) ? '正在登录：' : '已选账号：';
     if (currentAccountNode) currentAccountNode.textContent = profile
       ? prefix + accounts.label(profile) : '当前窗口未绑定账号';
-    if (profile) {
-      document.title = '[' + CHANNEL.shortName + ' · ' + accounts.label(profile).slice(0, 24) + '] 三国杀一将成名';
-      if (!/^\/10\/pc\//.test(location.pathname)) { try { window.name = profileName(profile); } catch (_) {} }
+    if (titleProfile) {
+      const owner = profileChannel(titleProfile);
+      document.title = '[' + owner.shortName + ' · ' + accounts.label(titleProfile).slice(0, 24) + '] 三国杀一将成名';
     } else {
       if (/^\[[^\]]+\]\s*/.test(document.title)) document.title = document.title.replace(/^\[[^\]]+\]\s*/, '');
-      if (!/^\/10\/pc\//.test(location.pathname)) { try { window.name = ownerName; } catch (_) {} }
+    }
+    if (!/^\/10\/pc\//.test(location.pathname)) {
+      try { window.name = profile ? profileName(profile) : ownerName; } catch (_) {}
     }
   }
   let gameAccountSyncTimer = 0, gameAccountSyncUntil = 0;
@@ -3294,7 +3381,7 @@ const ChannelCore = (() => {
     const identity = readGameIdentity();
     if (!identity) return false;
     applyGameIdentity(identity, {source: 'identity_sync'});
-    const id = currentProfileId || expectedProfileId;
+    const id = verifiedProfileId;
     if (!id) return false;
     const profile = profileById(id, CHANNEL.id);
     return !!(profile?.serverId && profile?.roleName && profile?.roleId);
@@ -3354,7 +3441,7 @@ const ChannelCore = (() => {
       return false;
     }
     if (boundId !== profile.id || force) {
-      currentProfileId = null;
+      currentProfileId = verifiedProfileId = null;
       setAccountPhase('waiting');
       consumedLaunch = false;
     }
@@ -3365,7 +3452,7 @@ const ChannelCore = (() => {
     return true;
   }
   function prepareCurrentWindowForNewAccount() {
-    currentProfileId = expectedProfileId = null;
+    currentProfileId = expectedProfileId = verifiedProfileId = null;
     consumedLaunch = false;
     clearTransientProfile();
     clearGameLoginSession();
@@ -3626,7 +3713,7 @@ const ChannelCore = (() => {
       if (saved && validTime(saved.expires)) {
         if ((saved.channelId && saved.channelId !== CHANNEL.id) || !saved.args || saved.args.channel_id !== CHANNEL.bridge?.channelId) throw new Error('启动参数渠道不匹配');
         if (saved.profileId && (!profileById(saved.profileId, CHANNEL.id) || (expectedProfileId && saved.profileId !== expectedProfileId))) throw new Error('账号窗口绑定不匹配');
-        currentProfileId = saved.profileId || null;
+        currentProfileId = verifiedProfileId = saved.profileId || null;
         selectedProfileId = currentProfileId; selectedProfileChannelId = CHANNEL.id;
         if (currentProfileId) { expectedProfileId = currentProfileId; sessionStorage.setItem(ACCOUNT_CONTEXT, currentProfileId); }
         setAccountPhase('loading'); heartbeat();
@@ -3651,11 +3738,11 @@ const ChannelCore = (() => {
             renderAccounts();
           }
           if (kind === 'user-data') {
-            if (currentProfileId) {
-              const changes = {roleName: extra.roleName, roleId: extra.roleId, serverId: extra.serverId};
-              if (saveLoginInfoEnabled() && !transientProfileMatches(currentProfileId, CHANNEL.id)) accounts.update(currentProfileId, changes);
-              else updateTransientProfile(changes);
-            }
+            // Route bridge data through the same identity gate as page probes.
+            // A launch handoff is normally already verified, but this keeps
+            // every role write protected against stale or mismatched bindings.
+            const identity = gameIdentityFromEvent(extra);
+            if (identity) applyGameIdentity(identity, {source: 'game_bridge_user_data'});
             markGameLoginSession();
             autoCollapseForLogin('检测到游戏账号资料，已自动折叠登录面板。', 'game_login',
               {source: 'game_bridge_user_data'});
@@ -3691,7 +3778,7 @@ const ChannelCore = (() => {
       try { sessionStorage.removeItem('sgs-direct-profile-v1'); } catch (_) {}
       const directAccount = profileById(directProfile, CHANNEL.id);
       if (directAccount) {
-        currentProfileId = expectedProfileId = directProfile;
+        currentProfileId = expectedProfileId = verifiedProfileId = directProfile;
         if (!directAccount.transient) selectProfile(directAccount);
         sessionStorage.setItem(ACCOUNT_CONTEXT, directProfile);
         // The embedded engine already owns this one-use grant. Mark it as
@@ -3812,12 +3899,14 @@ const ChannelCore = (() => {
       const snapshot = api.get ? api.get() : null;
       if (snapshot?.error) throw new Error(directErrorText(snapshot.error));
       if (snapshot?.provider) context.loginProvider = snapshot.provider;
+      currentProfileId = expectedProfileId = verifiedProfileId = profile.id;
       rememberLoginMetadata(profile.id, profile.channelId, context);
       context.loginCompleted = true;
       context.entered = true;
       markGameLoginSession();
       gameLoginAutoCollapsed = true;
       setLoginPanelCollapsed(true);
+      updateAccountHeading(); renderAccounts();
       if (isGamePage()) {
         status('登录状态已恢复，正在重新进入游戏…');
         return;
@@ -4127,7 +4216,7 @@ const ChannelCore = (() => {
           targetProfileId && sameAccountIdentity(identity.id, targetProfileId) ? targetProfileId : identity.id);
         if (!profile) throw new Error('账号记录未能建立，请重试');
         rememberLoginMetadata(profile.id, profile.channelId, context);
-        currentProfileId = expectedProfileId = profile.id; setAccountPhase('authorizing');
+        currentProfileId = expectedProfileId = verifiedProfileId = profile.id; setAccountPhase('authorizing');
         if (!profile.transient) selectProfile(profile);
         sessionStorage.setItem(ACCOUNT_CONTEXT, profile.id); heartbeat(); updateAccountHeading(); renderAccounts();
       }, CHANNEL.id);
@@ -4681,7 +4770,7 @@ const ChannelCore = (() => {
 /* DIRECT-ENGINE-BEGIN */
 (() => {
   'use strict';
-  const VERSION = '1.3.0';
+  const VERSION = '1.4.0';
   const ORIGIN = 'https://web.sanguosha.com';
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
   const SESSION_KEY = 'wegame.qq.session.v1';

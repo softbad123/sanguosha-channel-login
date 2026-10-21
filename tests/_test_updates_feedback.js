@@ -231,7 +231,7 @@ const metadataVersion = /^\/\/\s*@version\s+([0-9.]+)\s*$/m.exec(main)?.[1];
 const hostVersion = /const VERSION = '([0-9.]+)'/.exec(main)?.[1];
 const engineVersion = /const VERSION = '([0-9.]+)'/.exec(engine)?.[1];
 assert.deepStrictEqual({metadataVersion, hostVersion, engineVersion, packageVersion: pkg.version},
-  {metadataVersion: '1.3.0', hostVersion: '1.3.0', engineVersion: '1.3.0', packageVersion: '1.3.0'});
+  {metadataVersion: pkg.version, hostVersion: pkg.version, engineVersion: pkg.version, packageVersion: pkg.version});
 
 assert(main.includes('// @updateURL    https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js'), 'update URL is not pinned');
 assert(main.includes('// @downloadURL  https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js'), 'download URL is not pinned');

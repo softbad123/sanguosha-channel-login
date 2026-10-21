@@ -10,11 +10,12 @@ const localReadme = path.join(root, 'README-多渠道说明.md');
 const readme = fs.readFileSync(fs.existsSync(localReadme) ? localReadme : path.join(root, 'README.md'), 'utf8');
 const notices = fs.readFileSync(path.join(root, 'THIRD_PARTY_NOTICES.md'), 'utf8');
 const license = fs.readFileSync(path.join(root, 'LICENSES', 'Apache-2.0.txt'), 'utf8');
+const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const sourceUrl = 'https://github.com/Clarrycy/jinnangmiaoji/blob/main/jinnangdai/payload/unified-login.user.js';
 
 assert(main.includes('// @author       @暗鹊（第一作者；《统一登录器》原始源码）'), 'metadata must credit @暗鹊 as first author');
 assert(main.includes('// @author       softbad123（维护者）'), 'metadata must identify the maintainer');
-assert(main.includes('// @version      1.3.0'), 'metadata version must be 1.3.0');
+assert(main.includes('// @version      ' + pkg.version), 'metadata version must match package.json');
 assert(main.includes('第一作者与源码来源'), 'panel must show a source-credit heading');
 assert(main.includes('谨向 @暗鹊 致以诚挚感谢'), 'panel must thank @暗鹊');
 assert(main.includes(sourceUrl), 'panel must link to the pinned upstream source');
