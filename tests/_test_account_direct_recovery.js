@@ -122,6 +122,7 @@ function makeHarness(record, options = {}) {
     restoreMiddle: () => {},
     setProvidersBusy: () => {},
     emitDirectEvent: event => { events.push(event); return ''; },
+    reportDiagnostic: () => {},
     forgetCalls: 0,
     callCount: 0,
     showMiddleCalls: 0,
@@ -232,6 +233,22 @@ async function resume(harness, provider) {
   });
   const gameRun = await resume(gameHarness, 'qq');
 
+  // Account management is opened on /x/pc, but a Vivo restored session must
+  // navigate to Vivo's /10/pc game route. The middle page has no entry DOM on
+  // that path and previously forced the user through a fresh authorization.
+  const managerHarness = makeHarness(savedRecord('vivo'), {
+    path: '/x/pc/index.php', showMiddleFails: true,
+    exchange: async attempt => {
+      managerHarness.calls.push({provider: attempt.provider, session: attempt.session});
+      attempt.session = 'fresh-session';
+      attempt.grant = {account: 'vivo-account', token: 'T', sign: 'S',
+        timestamp: Math.floor(Date.now() / 1000), channel_id: 320056};
+      attempt.grantExpires = Date.now() + 90000;
+      return attempt.grant;
+    }
+  });
+  const managerRun = await resume(managerHarness, 'vivo');
+
   const expiryHarness = makeHarness(savedRecord('qq'));
   const expiryToken = 'b'.repeat(32);
   expiryHarness.context.attempt = {provider: 'qq', clientToken: expiryToken,
@@ -255,6 +272,8 @@ async function resume(harness, provider) {
     expiredHarness.context.forgetCalls === 0;
   const gamePageDirect = gameRun.result === true && gameHarness.context.openGameCalls === 1 &&
     gameHarness.context.showMiddleCalls === 0;
+  const accountManagerDirect = managerRun.result === true && managerHarness.context.openGameCalls === 1 &&
+    managerHarness.context.showMiddleCalls === 0;
   const expiryKeptRecord = expiryCleared && expiryHarness.store.has(expiryHarness.key) &&
     expiryHarness.context.forgetCalls === 0 && expiryHarness.context.attempt === null &&
     expiryHarness.events.some(event => event.type === 'error' && event.code === 'LOGIN_FLOW_EXPIRED');
@@ -267,12 +286,16 @@ async function resume(harness, provider) {
     recordKept: expiredHarness.store.has(expiredHarness.key), forgetCalls: expiredHarness.context.forgetCalls},
     game: {...gameRun, openGameCalls: gameHarness.context.openGameCalls,
       showMiddleCalls: gameHarness.context.showMiddleCalls},
+    accountManager: {...managerRun, openGameCalls: managerHarness.context.openGameCalls,
+      showMiddleCalls: managerHarness.context.showMiddleCalls},
     expiry: {cleared: expiryCleared, recordKept: expiryHarness.store.has(expiryHarness.key),
       forgetCalls: expiryHarness.context.forgetCalls,
       event: expiryHarness.events.find(event => event.type === 'error') || null},
     cancel: {supersededCleared, userCleared, events: cancelStore.events},
-    checks: {allRebuilt, failureKeptRecord, gamePageDirect, expiryKeptRecord, cancelReasons}}, null, 2));
-  if (!allRebuilt || !failureKeptRecord || !gamePageDirect || !expiryKeptRecord || !cancelReasons) {
+    checks: {allRebuilt, failureKeptRecord, gamePageDirect, accountManagerDirect,
+      expiryKeptRecord, cancelReasons}}, null, 2));
+  if (!allRebuilt || !failureKeptRecord || !gamePageDirect || !accountManagerDirect ||
+    !expiryKeptRecord || !cancelReasons) {
     process.exit(1);
   }
 })().catch(error => { console.error(error); process.exit(1); });

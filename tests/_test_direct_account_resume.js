@@ -82,6 +82,7 @@ function makeContext(record) {
       return result;
     },
     active: () => {},
+    reportDiagnostic: () => {},
     hideQR: () => {},
     restoreMiddle: () => {},
     setProvidersBusy: () => {},

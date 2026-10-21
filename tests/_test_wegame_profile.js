@@ -15,9 +15,13 @@ function functionSource(source, name) {
 }
 
 const host = fs.readFileSync('三国杀多渠道登录.user.js', 'utf8');
-assert(!/AccountInfo\.Self\.UserId/.test(host), 'Xiaomi injection must not use AccountInfo.Self.UserId');
-assert(host.includes('const u=UserData.Self||{}'), 'Xiaomi injection must read UserData.Self');
-assert(host.includes('b.userID'), 'Xiaomi injection must read UserBrief.userID');
+assert(host.includes('function installGameIdentityProbe()'), 'unified game identity probe is missing');
+assert(!/AccountInfo\.Self\.UserId/.test(host), 'game identity probe must not use AccountInfo.Self.UserId');
+assert(host.includes('u=UserData&&(UserData.Self||UserData.self)'), 'identity probe must read UserData.Self');
+assert(host.includes('b=u&&(u.UserBrief||u.userBrief)'), 'identity probe must read UserBrief');
+assert(host.includes('["userID","UserId","UserID","userId","RoleId","RoleID","roleId"]'),
+  'identity probe must read the game role id');
+assert(!host.includes('const u=UserData.Self||{}'), 'duplicate Xiaomi identity hook should remain removed');
 const hostContext = {
   currentProfileId: 'wegame:account-1', expectedProfileId: '', accountPhase: 'authorizing',
   Date, Number, String, Set, Object
