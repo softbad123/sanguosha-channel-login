@@ -14,7 +14,7 @@ let failures = 0;
 const fail = message => { failures++; console.error('FAIL', message); };
 const visible = registry.visibleChannels();
 const visibleIds = new Set(visible.map(channel => channel.id));
-if (visible.length !== 7) fail('expected 7 visible bridge channels, got ' + visible.length);
+if (visible.length !== 9) fail('expected 9 visible bridge channels, got ' + visible.length);
 for (const id of ['4399', 'feihuo', 'shunwang', '2144', 'zixia', 'qqgame', '7k7k', 'baidu', '360']) {
   if (visibleIds.has(id)) fail('portal channel must not be visible: ' + id);
 }
@@ -47,8 +47,7 @@ for (const channel of registry.channels) {
 }
 const wxHint = registry.get('wegame')?.loginOptions.find(option => option.id === 'wegame-wx')?.hint;
 if (wxHint !== '显示微信官方二维码') fail('wechat login hint must be exactly 显示微信官方二维码');
-if (registry.get('honor')) fail('honor channel must be removed');
-for (const channelId of ['huawei', 'bilibili']) {
+for (const channelId of ['huawei', 'honor', 'bilibili']) {
   const channel = registry.get(channelId);
   if (!channel) fail(channelId + ' channel is missing');
   if (channel.loginOptions.some(option => option.kind === 'official')) {
@@ -60,6 +59,32 @@ for (const channelId of ['huawei', 'bilibili']) {
   if (channel.standardLoginMethods.some(method => /密码|短信/.test(method))) {
     fail(channelId + ' must not advertise unsupported password or SMS login');
   }
+}
+const honor = registry.get('honor');
+if (!honor || !registry.isBrowser(honor)) fail('honor must be a browser-capable direct channel');
+if (honor?.platformId !== '50027' || honor?.gameChannelId !== 320463) {
+  fail('honor platform/channel identifiers changed');
+}
+if (honor?.loginOptions.length !== 1 || honor?.loginOptions[0]?.id !== 'honor-qr' ||
+  honor?.loginOptions[0]?.kind !== 'direct' || honor?.loginOptions[0]?.mode === 'browser') {
+  fail('honor must expose exactly one direct QR option');
+}
+if (honor?.standardLoginMethods.some(method => /密码|短信/.test(method))) {
+  fail('honor must not advertise password or SMS login');
+}
+const yyb = registry.get('yyb');
+if (!yyb || !registry.isBrowser(yyb)) fail('yyb must be a browser-capable direct channel');
+if (yyb?.platformId !== '335' || yyb?.gameChannelId !== 320460) {
+  fail('yyb platform/channel identifiers changed');
+}
+const yybOptions = yyb?.loginOptions || [];
+if (yybOptions.length !== 2 || yybOptions[0]?.id !== 'yyb-qq' ||
+  yybOptions[0]?.provider !== 'yybqq' || yybOptions[1]?.id !== 'yyb-wx' ||
+  yybOptions[1]?.provider !== 'yybwx' || yybOptions.some(option => option.kind !== 'direct')) {
+  fail('yyb must expose separate QQ and WeChat direct QR options');
+}
+if (yyb?.standardLoginMethods.some(method => /密码|短信/.test(method))) {
+  fail('yyb must not advertise password or SMS login');
 }
 const steam = registry.get('steam');
 const steamWeb = steam?.loginOptions.find(option => option.id === 'steam-web');

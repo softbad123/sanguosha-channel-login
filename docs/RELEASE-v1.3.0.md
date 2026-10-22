@@ -130,7 +130,7 @@
 
 ## 来源与许可
 
-- 第一作者：**@暗鹊**。
+- 第一作者：**[@Clarrycy](https://github.com/Clarrycy)（暗鹊）**。
 - 原始源码：[unified-login.user.js](https://github.com/Clarrycy/jinnangmiaoji/blob/main/jinnangdai/payload/unified-login.user.js)。
-- 本项目基于上述源码整理、维护与扩展，并非 @暗鹊 官方发布。
+- 本项目基于上述源码整理、维护与扩展，并非 [@Clarrycy](https://github.com/Clarrycy)（暗鹊）官方发布。
 - 修改说明、第三方来源与许可证状态见 [THIRD_PARTY_NOTICES.md](https://github.com/softbad123/sanguosha-channel-login/blob/main/THIRD_PARTY_NOTICES.md)。

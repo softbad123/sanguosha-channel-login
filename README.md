@@ -2,8 +2,8 @@
 
 在三国杀网页版登录页提供一个统一的多渠道登录面板，把当前浏览器会话接到渠道官方的扫码、网页授权和游卡兑换链路，并在本机提供账号管理与快速直登。
 
-当前版本：`1.4.0`
-支持渠道：小米、Vivo、OPPO、华为、哔哩哔哩、WeGame、Steam（共 7 个）  
+当前版本：`1.4.1`
+支持渠道：小米、Vivo、OPPO、华为、荣耀、哔哩哔哩、WeGame、应用宝、Steam（共 9 个）<br>
 运行方式：Tampermonkey 用户脚本（Chrome / Edge / QQ 浏览器极速模式）
 
 > 本项目是本地辅助工具，不绕过官方登录、实名、支付或风控。最终能否登录仍由渠道服务器、游卡服务器及账号状态共同决定。  
@@ -11,16 +11,49 @@
 
 ## 第一作者与源码来源
 
-- 第一作者：**@暗鹊**。
-- 原始源码：[@暗鹊《统一登录器》](https://github.com/Clarrycy/jinnangmiaoji/blob/main/jinnangdai/payload/unified-login.user.js)。
-- 本项目基于上述源码整理、维护与扩展。谨向 @暗鹊 致以诚挚感谢；本仓库并非 @暗鹊 官方发布。
+- 第一作者：**[@Clarrycy](https://github.com/Clarrycy)（暗鹊）**。
+- 原始源码：[@Clarrycy（暗鹊）《统一登录器》](https://github.com/Clarrycy/jinnangmiaoji/blob/main/jinnangdai/payload/unified-login.user.js)。
+- 本项目基于上述源码整理、维护与扩展。谨向 [@Clarrycy](https://github.com/Clarrycy)（暗鹊）致以诚挚感谢；本仓库并非 @Clarrycy（暗鹊）官方发布。
+- 协作与致谢：[@Clarrycy](https://github.com/Clarrycy)（荣耀服扫码链路参考其公开《统一登录器》实现）、[@DeepSeek](https://github.com/DeepSeek)。
+- AI 协作：本项目在设计、实现、测试与文档整理过程中由 `deepseek-v4.1-flash` 模型协作完成；模型参与不构成 DeepSeek 官方发布或背书。
+- 完整贡献者名单：[Contributors](https://github.com/softbad123/sanguosha-channel-login/graphs/contributors)。
 - 维护者：softbad123。修改说明、第三方来源与许可证状态见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 1.4.1 更新
+
+`1.4.1` 将登录、账号、诊断三页统一放入固定 `360 × 500px` 面板，去掉折叠箭头和不必要的说明文字，把安全说明、作者与源码来源收进“关于”弹窗。账号列表与运行日志改为内部滚动，二维码改为屏幕中央弹窗，取消当前登录按钮始终完整可见。
+
+详细发布说明与测试记录见 [`docs/RELEASE-v1.4.1.md`](docs/RELEASE-v1.4.1.md)。
+
+### 固定面板与功能键
+
+- 面板在登录、账号、诊断三页之间保持固定尺寸；标题、状态卡、页签和页脚常驻，仅当前页内容滚动。
+- 登录页压缩登录按钮与保存开关，删除“授权后卡在 404／空白页？”手动回填入口，并为“取消当前登录”固定预留 `34px` 高度。
+- 账号页始终展开账号管理与账号列表，不再使用右侧折叠箭头；账号增多时仅在列表内部滚动。
+- 诊断页始终展开运行记录，使用单行四列工具条；日志增长时仅在日志区域内部滚动。
+- 安全说明、第一作者、源码来源、贡献者与 AI 协作信息移入页脚“关于”弹窗。
+
+### 扫码与验证
+
+- 二维码改为屏幕中央的 `240px` 弹窗；点击右上角关闭、点击遮罩或按 `Esc` 都会取消本次扫码流程。
+- 已在标准窗口与 `1280 × 480` 矮窗口中验证面板无截断、三页尺寸稳定，账号与日志内部滚动正常。
+- `npm test` 的 34 项回归测试全部通过，正式版与本地测试版均通过语法检查及 Chrome DevTools Protocol 布局测试。
 
 ## 1.4.0 更新
 
-`1.4.0` 修复了渠道账号选中状态在刷新、回退或官服登录后污染账号记录的问题，并把“游戏身份归属”拆成可验证、可回归测试的独立边界。
+`1.4.0` 修复了渠道账号选中状态在刷新、回退或官服登录后污染账号记录的问题，恢复荣耀服扫码，并新增应用宝 QQ / 微信扫码。身份归属被拆成可验证、可回归测试的独立边界。
 
 详细发布说明见 [`docs/RELEASE-v1.4.0.md`](docs/RELEASE-v1.4.0.md)。
+
+### 新增与恢复渠道
+
+- 恢复荣耀服面板扫码：荣耀账号二维码 → 荣耀账号服务票据 → 荣耀游戏中心 → AnySDK → 游卡；已通过实际扫码登录验证。
+- 新增应用宝 QQ / 微信扫码：使用应用宝平台号 `335`、腾讯 YSDK 渠道 `320460`、游卡网页渠道 `1036` 和独立 `yybqq` / `yybwx` 会话，绝不复用 WeGame 的 QQ / 微信记录。
+- 微信登录使用腾讯 YSDK 的二维码签发、长轮询和一次性 code 校验；微信 code 在发起校验前清除，失败后不能重放。
+- 应用宝微信二维码请求使用专用微信主机策略，不再被通用 API 白名单误拦截；真实接口已验证二维码签发和轮询格式。
+- QQ 登录要求官方授权返回 `pay_token`，并通过 YSDK 校验；若浏览器授权未返回该字段，会以 `YYB_QQ_PAY_TOKEN_MISSING` 安全失败，不会生成账号记录。
+- YSDK 的 QQ 校验响应可能返回另一个 ID 空间的 `openid`。脚本按官方客户端语义保留 QQ 授权回调的 `openid`、`access_token` 和 `pay_token` 作为账号身份，不再因响应 `openid` 不同而中断；校验失败仍不会写入账号记录。
+- 应用宝 AnySDK 会话必须属于 `newysdk` 平台 `335`。游卡 grant 兼容官方网页渠道 `1036`、YSDK 别名 `320460`，或在字段缺失时由已校验的 AnySDK 会话绑定身份；其他渠道号仍会被拒绝。进入网页版游戏时统一规范化为官方网页渠道 `1036`。
 
 ### 身份隔离与账号记录
 
@@ -81,11 +114,13 @@
 - 自动记录脚本启动、阶段状态和脚本自身异常；同一消息会合并计数，避免重复刷屏。
 - 初始保留策略为 240 条、30 天、约 96 KiB，按滚动窗口保存；`1.3.0` 进一步收紧为 3 个会话、3 天、80 条、约 48 KiB。
 - 写入前隐藏 URL 查询参数、授权码、token、ticket、Cookie、会话字段和长随机标识；日志不上传，需用户主动复制或导出。
-- 运行记录增加“复制反馈日志”“导出反馈日志”和“问题反馈”；油猴菜单可检查更新、复制日志、打开反馈页和清空本机日志。
+- 运行记录提供“复制日志”“导出日志”和“问题反馈”；油猴菜单可检查更新、复制日志、打开反馈页和清空本机日志。
 
 ### 菜单式面板
 
-- 面板改为“登录 / 账号 / 诊断”三页菜单，状态卡常驻，诊断页签显示异常数量，避免功能增加后形成超长纵向滚动。
+- 面板改为“登录 / 账号 / 诊断”三页菜单，外框固定为 360×500px（矮窗口自动收缩），三页切换不再跳动；状态卡、页签和页脚常驻，功能按钮按固定窗口紧凑排列。
+- 登录页为“取消当前登录”预留空间；账号页使用自适应账号列表，诊断页使用单行工具条和自适应日志区。账号与日志分别在内部滚动，增长时不会撑大面板。
+- 账号管理和运行记录始终展开，不提供折叠箭头，避免收纳后产生无意义的空白。
 - 折叠态缩至 208px，只保留标题和“展开”按钮，减少对游戏页面的遮挡；拖动位置仍受视口边界约束。
 - 登录成功后的自动折叠改为幂等操作，同一页面只执行一次，避免重复通知和重复收起。
 
@@ -108,36 +143,37 @@
 - 修复 WeGame 账号被错误拼接为“区服待返回 · 未打开 · 待登录”的状态显示，改为明确的登录、区服和窗口状态。
 - 进入游戏后从 `AccountInfo` 与 `UserData` 补充角色名、角色 ID、登录账号和区服。
 - 账号资料同步只在游戏页、资料不完整时短时运行，不再全页面永久轮询。
-- 在脚本元数据、登录面板、README 与许可证声明中补充第一作者 @暗鹊及固定源码链接。
+- 在脚本元数据、登录面板、README 与许可证声明中补充第一作者 @Clarrycy（暗鹊）及固定源码链接。
 
 ## 界面预览
 
 <table>
   <tr>
-    <td colspan="2" align="center"><a href="docs/screenshots/01-panel.jpg"><img src="docs/screenshots/01-panel.jpg" width="760" alt="主登录页默认展开渠道登录面板"></a><br><sub>主登录页默认展开；官服账号选择器不参与插件折叠判断</sub></td>
+    <td align="center"><a href="docs/screenshots/v1.4.1/login.png"><img src="docs/screenshots/v1.4.1/login.png" width="320" alt="固定尺寸登录页"></a><br><sub>登录页：固定 360 × 500px</sub></td>
+    <td align="center"><a href="docs/screenshots/v1.4.1/login-cancel.png"><img src="docs/screenshots/v1.4.1/login-cancel.png" width="320" alt="登录进行中与取消当前登录按钮"></a><br><sub>登录进行中：“取消当前登录”完整可见</sub></td>
   </tr>
   <tr>
-    <td align="center"><a href="docs/screenshots/02-auto-expand.png"><img src="docs/screenshots/02-auto-expand.png" width="300" alt="主登录页自动展开设置"></a><br><sub>“主登录页自动展开”可关闭并持久保存</sub></td>
-    <td align="center"><a href="docs/screenshots/03-accounts.png"><img src="docs/screenshots/03-accounts.png" width="300" alt="账号管理与游戏内 ID"></a><br><sub>游戏内 ID、跨渠道账号与整行选中</sub></td>
+    <td align="center"><a href="docs/screenshots/v1.4.1/accounts.png"><img src="docs/screenshots/v1.4.1/accounts.png" width="320" alt="账号管理页"></a><br><sub>账号页：列表内部滚动，无折叠箭头</sub></td>
+    <td align="center"><a href="docs/screenshots/v1.4.1/diagnostics.png"><img src="docs/screenshots/v1.4.1/diagnostics.png" width="320" alt="诊断与运行记录页"></a><br><sub>诊断页：单行工具条与内部滚动日志</sub></td>
   </tr>
   <tr>
-    <td align="center"><a href="docs/screenshots/04-diagnostics.png"><img src="docs/screenshots/04-diagnostics.png" width="300" alt="可溯源反馈日志"></a><br><sub>可溯源日志：流程、阶段、traceId 与异常数</sub></td>
-    <td align="center"><a href="docs/screenshots/06-collapsed-page.jpg"><img src="docs/screenshots/06-collapsed-page.jpg" width="300" alt="登录成功后面板自动折叠"></a><br><sub>登录成功后自动折叠为 208px 标题栏</sub></td>
+    <td align="center"><a href="docs/screenshots/v1.4.1/qr.png"><img src="docs/screenshots/v1.4.1/qr.png" width="320" alt="屏幕中央二维码弹窗"></a><br><sub>扫码：屏幕中央 240px 弹窗</sub></td>
+    <td align="center"><a href="docs/screenshots/v1.4.1/about.png"><img src="docs/screenshots/v1.4.1/about.png" width="320" alt="关于弹窗"></a><br><sub>安全、作者、源码与协作信息收进“关于”</sub></td>
   </tr>
 </table>
 
 ## 功能特性
 
 - 统一面板：在三国杀网页版登录页切换渠道，不需要分别安装多个渠道脚本。
-- 官方登录链路：扫码在当前面板完成；账号密码、短信验证码、Steam Guard 等敏感操作在渠道官方页面完成。
+- 官方登录链路：扫码二维码在屏幕中央弹窗显示；账号密码、短信验证码、Steam Guard 等敏感操作在渠道官方页面完成。
 - 账号管理：保存账号展示信息后，可在账号管理中选择账号并直接登录；跨渠道账号会自动切换渠道后继续。
-- 菜单式面板：登录、账号和诊断分页展示，避免功能增加后产生超长纵向滚动；仅当前页内容参与布局。
+- 菜单式面板：登录、账号和诊断共用固定外框；登录操作键按窗口高度紧凑排布，账号列表与运行日志在各自区域内滚动，记录增长不会改变窗口尺寸。
 - 保存本次登录信息：默认开启。开启后只在本机保存可恢复的官方登录状态；关闭后不留下本次登录记录。
 - 自动收尾：检测到官方账号登录完成后关闭本次登录弹窗；插件渠道登录成功、点击官服“进入游戏”或进入游戏页后自动收起为紧凑标题栏。主登录页可通过持久化选项设置是否默认展开。
 - 独立流程：WeGame 的 QQ 与微信使用独立流程令牌、会话键和恢复记录，避免相互取消。
 - 自动更新：每天最多检查一次 GitHub Release；可在面板或油猴菜单手动检查。更新仍由 Tampermonkey 的脚本安装/更新链路完成。
 - 本地优先：账号、会话和反馈日志只写入 Tampermonkey 本地存储，不上传到额外服务器。
-- 诊断信息：只记录版本、渠道、阶段和 HTTP 状态等排错信息，不输出 Cookie、token、票据、密码或验证码。
+- 诊断信息：只保留运行记录与排障工具；安全说明、第一作者与源码来源收纳在页脚“关于”中。
 
 ## 支持渠道
 
@@ -147,8 +183,10 @@
 | Vivo | 10031 | 320056 | 面板扫码；官方网页登录 | 官方 passport 与 joint 桥接 |
 | OPPO | 10030 | 320123 | HeyTap 官方扫码 / 手机号等网页方式 | 官方 code 一次性回传 |
 | 华为 | 332 | 320459 | 面板扫码 | 二维码、账号授权与游卡兑换 |
+| 荣耀 | 50027 | 320463 | 面板扫码 | 荣耀账号二维码、游戏中心实名校验与游卡兑换 |
 | 哔哩哔哩 | 50003 | 120133 | 面板扫码 | access_key 与游戏回调交接 |
 | WeGame | 326 | 320023 | QQ 扫码；微信扫码 | QQ / 微信使用独立流程和会话记录 |
+| 应用宝 | 335 | 1036 | QQ 扫码；微信扫码 | YSDK 校验使用 `320460`；游卡网页路由使用 `1036`；QQ 缺少 `pay_token` 时安全失败 |
 | Steam | 50000 | 320061 | Steam 官方 OAuth 网页 | 扫码、账号密码和 Steam Guard 以官方页面为准 |
 
 4399、飞火、顺网、2144、紫霞、QQ 大厅、7K7K、百度、360 等门户渠道不在本脚本的下拉框中显示；请直接在对应官网登录和进入游戏。
@@ -162,7 +200,7 @@
 3. 下载固定更新地址中的 [`sanguosha-channel-login.user.js`](https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js)，在 Tampermonkey 中导入并启用。Release 中可能同时提供带版本号的副本，内容相同。
 4. 停用或删除旧的“小米服登录器”“统一登录器”以及旧版“三国杀多渠道登录”脚本，避免同页重复注入。
 5. 打开 <https://web.sanguosha.com/login/10th_client/index.html>。
-6. 页面右侧出现登录面板后，确认页脚显示 `v1.4.0 · 多渠道本地版 · 7 个渠道`。
+6. 页面右侧出现登录面板后，确认页脚显示 `v1.4.1 · 9 个渠道`。
 
 ### 方式二：从源码安装
 
@@ -178,7 +216,7 @@
 
 1. 在面板的“登录渠道”下拉框中选择渠道。
 2. 点击对应的扫码或官方网页登录按钮。
-3. 面板扫码时，用手机完成扫码和确认；官方网页登录时，在弹出的官方页面完成账号密码、短信或第三方登录。
+3. 扫码二维码会出现在屏幕中央的弹窗中，用手机完成扫码和确认；官方网页登录时，在弹出的官方页面完成账号密码、短信或第三方登录。
 4. 通过插件发起的账号识别成功后会关闭本次登录弹窗；读取到有效角色、区服或账号资料后自动把面板收起为紧凑标题栏。
 5. 需要继续操作时，点击标题栏的“展开”。登录页的“主登录页自动展开”选项默认开启；官服账号选择器的显示、刷新或切换不会收起插件。插件渠道登录成功、点击官服“进入游戏”或进入游戏页后会折叠。关闭该选项后，主登录页会沿用上次折叠状态。“隐藏”会隐藏整个面板，可从油猴菜单重新显示。
 
@@ -233,8 +271,17 @@ Steam 登录使用 `store.steampowered.com` 官方 OAuth 页面。扫码、账�
 **Steam 页面打不开**  
 确认 `store.steampowered.com` 可访问，并检查代理、DNS 和浏览器拦截规则。
 
-**华为 / 哔哩哔哩没有账号密码入口**  
-这两个渠道当前只保留经过验证的扫码或官方登录链路，不展示无法完成游戏交接的灰色按钮。
+**华为 / 荣耀 / 哔哩哔哩没有账号密码入口**<br>
+这三个渠道当前只保留经过验证的扫码或官方登录链路，不展示无法完成游戏交接的灰色按钮。
+
+**应用宝扫码后提示 `YYB_QQ_PAY_TOKEN_MISSING`**<br>
+QQ 浏览器授权没有返回应用宝校验所需的 `pay_token`。脚本会主动停止，不会把不完整票据写入账号管理；请改用应用宝微信扫码，或等待官方 QQ 授权链路返回完整字段。
+
+**应用宝微信没有出现二维码**<br>
+请确认使用的是最新正式版，并已停用旧版脚本。`1.4.1` 的应用宝微信链路使用专用受信主机策略；若仍失败，请从“运行记录”导出反馈日志，重点查看 `stage` 是否为 `yyb_wx_qr` 或 `yyb_wx_poll`。
+
+**应用宝扫码后提示 `YYB_CHANNEL_MISMATCH`**<br>
+应用宝的腾讯 YSDK 渠道 `320460` 与游卡网页渠道 `1036` 属于两个不同的命名空间。`1.4.1` 会分别校验 AnySDK 的 `newysdk` / `335` 身份与游卡 grant，并将进入网页版的渠道统一为 `1036`。请确认已停用旧脚本并使用最新正式版；若仍出现，请导出诊断日志并重点查看 `stage` 是 `sgs_session` 还是 `sgs_grant`。
 
 **账号列表为什么没有显示区服**
 
@@ -242,7 +289,7 @@ Steam 登录使用 `store.steampowered.com` 官方 OAuth 页面。扫码、账�
 
 **登录后进入加载页，又返回主登录页**
 
-`1.1.3` 已修复 WeGame 的 `PlatformID` 凭证误判；`1.1.4` 又修复了 QQ 浏览器丢失 `window.name` 后交接无法恢复，以及回退到经典 OL 登录页的问题。若仍复现，请先确认版本为 `1.4.0`、Tampermonkey 为 `5.5.1+`、没有同时启用旧版登录脚本，再从“运行记录”复制或导出反馈日志；日志中会显示失败所在的流程、阶段、错误码、源码行列号和 `cause` 链，便于直接定位。QQ 浏览器慢网下请给官方请求和游戏加载最多 4 分钟，不要连续重复点击登录。
+`1.1.3` 已修复 WeGame 的 `PlatformID` 凭证误判；`1.1.4` 又修复了 QQ 浏览器丢失 `window.name` 后交接无法恢复，以及回退到经典 OL 登录页的问题。若仍复现，请先确认版本为 `1.4.1`、Tampermonkey 为 `5.5.1+`、没有同时启用旧版登录脚本，再从“运行记录”复制或导出反馈日志；日志中会显示失败所在的流程、阶段、错误码、源码行列号和 `cause` 链，便于直接定位。QQ 浏览器慢网下请给官方请求和游戏加载最多 4 分钟，不要连续重复点击登录。
 
 **慢网络下如何理解超时**
 
@@ -253,7 +300,9 @@ Steam 登录使用 `store.steampowered.com` 官方 OAuth 页面。扫码、账�
 - `_direct_engine.js` 是独立登录引擎；主脚本中的内嵌引擎必须与其逐字一致。
 - 修改引擎后运行 `npm run sync:engine`，由 `tools/sync-embedded-engine.js` 更新内嵌副本，避免手工复制造成版本漂移。
 - `tests/_test_embedded_engine_sync.js` 同时校验内嵌一致性以及元数据、宿主、引擎三处版本号。
-- `tests/_test_login_options.js` 校验 7 个可见桥接渠道，并确认荣耀渠道不再注册。
+- `tests/_test_login_options.js` 校验 9 个可见桥接渠道、荣耀扫码入口以及应用宝 QQ / 微信独立入口。
+- `tests/_test_honor_engine.js` 校验荣耀二维码 Cookie 复用、XML 解析、OAuth/游戏中心交换、游卡身份绑定和会话恢复。
+- `tests/_test_yyb_engine.js` 校验应用宝请求签名、微信受信主机策略、二维码与长轮询、一次性 code、QQ `pay_token`、YSDK 响应 openid 与 OAuth openid 不同时的身份保持、失败不记账、AnySDK `newysdk` / `335` 绑定，以及 YSDK `320460` 与游卡网页 `1036` 的命名空间隔离。
 - `tests/_test_registry_security.js` 校验渠道域名与 `@connect` 配置一致。
 - `tests/_test_wegame_profile.js` 校验 WeGame 状态文案、区服读取和角色资料回填。
 - `tests/_test_credits.js` 校验第一作者、固定源码链接和 Apache-2.0 许可证声明。
@@ -283,4 +332,4 @@ npm test
 
 ## 许可证
 
-本项目维护者原创的修改与新增部分使用 [MIT License](LICENSE) 开源；源自 @暗鹊《统一登录器》的部分继续受 [Apache License 2.0](LICENSES/Apache-2.0.txt) 约束。再分发时请保留作者署名、固定源码链接、修改声明与 Apache-2.0 许可证副本。小米服相关参考实现的授权状态仍需单独核实，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+本项目维护者原创的修改与新增部分使用 [MIT License](LICENSE) 开源；源自 [@Clarrycy](https://github.com/Clarrycy)（暗鹊）《统一登录器》的部分继续受 [Apache License 2.0](LICENSES/Apache-2.0.txt) 约束。再分发时请保留作者署名、固定源码链接、修改声明与 Apache-2.0 许可证副本。小米服相关参考实现的授权状态仍需单独核实，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

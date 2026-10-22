@@ -30,7 +30,7 @@ function failure(code, stage, extra = {}) {
   return Object.assign(new Error(code), {stage, ...extra});
 }
 
-const providers = ['qq', 'wx', 'bilibili', 'steam', 'oppo', 'xiaomi', 'vivo', 'huawei'];
+const providers = ['qq', 'wx', 'bilibili', 'steam', 'oppo', 'xiaomi', 'vivo', 'huawei', 'honor', 'yybqq', 'yybwx'];
 const grantStage = provider => provider === 'bilibili' ? 'bili_grant' :
   provider === 'steam' ? 'steam_grant' : 'sgs_grant';
 
@@ -48,6 +48,12 @@ function upstreamCredentials(provider) {
     accountName: 'oppo-user', credentialType: 'game-ticket'}};
   if (provider === 'xiaomi' || provider === 'vivo') return {
     [provider]: {uid: 'uid', session: 'upstream-session', username: 'user'}
+  };
+  if (provider === 'yybqq' || provider === 'yybwx') return {
+    yyb: {openid: 'yyb-openid', accessToken: 'yyb-token', payToken: 'yyb-pay-token',
+      pf: 'pf', pfKey: 'pf-key', loginType: provider === 'yybqq' ? 'qq' : 'wx',
+      appid: provider === 'yybqq' ? '1112316645' : 'wx1ca4df97a2930085',
+      channel: '320460', atExpires: future}
   };
   return {[provider]: {auth: {uid: 'uid', session: 'upstream-session',
     username: 'user', expires: future}}};
@@ -81,7 +87,8 @@ function makeHarness(record, options = {}) {
       qq: {path: '/10/pc/index.php'}, wx: {path: '/10/pc/index.php'},
       bilibili: {path: '/10/pc/bilibiliWD_index.php'}, steam: {path: '/10/pc/index.php'},
       oppo: {path: '/10/pc/index.php'}, vivo: {path: '/10/pc/index.php'},
-      huawei: {path: '/10/pc/index.php'},
+      huawei: {path: '/10/pc/index.php'}, honor: {path: '/10/pc/index.php'},
+      yybqq: {path: '/10/pc/index.php'}, yybwx: {path: '/10/pc/index.php'},
       xiaomi: {path: '/x/pc/index.php'}
     },
     GM_getValue: (name, fallback) => store.has(name) ? store.get(name) : fallback,

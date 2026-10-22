@@ -213,12 +213,12 @@ const manager = FakeWBMgr.GetInstance();
 manager.event('cmsg.CRespLogin', [{
   Protocol: {ProtoVO: {protoData: {
     userID: 654321,
-    user: {nickname: '去女澡堂呐喊', extend: {account: 'vivo-login'}}
+    user: {nickname: '示例角色', extend: {account: 'vivo-login'}}
   }}}
 }, false]);
 assert.strictEqual(protocolCalls, 1, 'original WBMgr.event was not called');
 assert.strictEqual(protocol.sandbox.__SGS_GAME_IDENTITY_LAST__.roleId, '654321');
-assert.strictEqual(protocol.sandbox.__SGS_GAME_IDENTITY_LAST__.roleName, '去女澡堂呐喊');
+assert.strictEqual(protocol.sandbox.__SGS_GAME_IDENTITY_LAST__.roleName, '示例角色');
 assert.strictEqual(protocol.sandbox.__SGS_GAME_IDENTITY_LAST__.loginAccount, 'vivo-login');
 assert.strictEqual(protocolEvents.at(-1).roleId, '654321', 'CRespLogin identity was not emitted');
 
@@ -255,13 +255,13 @@ const notifyPage = {
 assert.strictEqual(installOn(notifyPage), true, 'notify hook could not be installed');
 const notifyContext = {};
 notifyPage.Sgs.prototype.notifyUserData.call(notifyContext, {
-  Protocol: {userData: {user: {userID: 654321, nickname: '去女澡堂呐喊'}}}
+  Protocol: {userData: {user: {userID: 654321, nickname: '示例角色'}}}
 });
 assert.strictEqual(notifyEvents.length, 1, 'notifyUserData identity was not emitted');
 assert.strictEqual(notifyEvents[0].roleId, '654321');
-assert.strictEqual(notifyEvents[0].roleName, '去女澡堂呐喊');
+assert.strictEqual(notifyEvents[0].roleName, '示例角色');
 assert.strictEqual(notifyEvents[0].serverId, '320056');
-assert.strictEqual(notifyContext.received?.Protocol?.userData?.user?.nickname, '去女澡堂呐喊',
+assert.strictEqual(notifyContext.received?.Protocol?.userData?.user?.nickname, '示例角色',
   'original notifyUserData was not called');
 
 console.log(JSON.stringify({ok: true, events: first.events.length, injected: injected.events.length, chained: true,

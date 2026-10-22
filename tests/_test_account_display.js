@@ -56,7 +56,7 @@ assert(!Object.values(cases).some(value => /(?:^| · ) · /.test(value)));
 assert(main.includes("accountsView.className = 'accounts'"), 'custom account listbox is missing');
 assert(main.includes("option.className = 'account-choice'"), 'account options are not full-row buttons');
 assert(main.includes("option.setAttribute('role', 'option')"), 'account options are not accessible listbox options');
-assert(main.includes('.accounts{display:block;width:100%;') && main.includes('padding:4px 0;'),
+assert(/\.accounts\{[^}]*display:block[^}]*width:100%[^}]*padding:4px 0;/.test(main),
   'account list still reserves horizontal padding around selected rows');
 assert(main.includes('.account-choice{display:block;width:100%;'), 'account choice does not span the full row');
 assert(main.includes('.account-choice[aria-selected="true"]'), 'selected account has no full-row highlight');

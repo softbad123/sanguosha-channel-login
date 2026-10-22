@@ -28,6 +28,8 @@ function baseContext(extra) {
     Blob: class Blob { constructor(parts, options) { this.parts = parts; this.options = options; } },
     assert: (ok, codeName, stage) => { if (!ok) { const error = new Error(codeName); error.stage = stage; throw error; } },
     failure: (codeName, stage) => Object.assign(new Error(codeName), {stage}),
+    wxAppId: attempt => attempt.provider === 'yybwx' ? 'wx1ca4df97a2930085' : 'wxba26a260a325b6f8',
+    wxBundleId: attempt => attempt.provider === 'yybwx' ? 'com.tencent.tmgp.sgs.x' : 'com.tencent.yoka.newsgs',
     uniqueParams: search => Object.fromEntries(new URLSearchParams(search)),
     queryURL: (base, params) => base + '?' + new URLSearchParams(params),
     active: () => {},
