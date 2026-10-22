@@ -16,7 +16,7 @@
 - 本项目基于上述源码整理、维护与扩展。谨向 [@Clarrycy](https://github.com/Clarrycy)（暗鹊）致以诚挚感谢；本仓库并非 @Clarrycy（暗鹊）官方发布。
 - 协作与致谢：[@Clarrycy](https://github.com/Clarrycy)（荣耀服扫码链路参考其公开《统一登录器》实现）、[@DeepSeek](https://github.com/DeepSeek)。
 - AI 协作：本项目在设计、实现、测试与文档整理过程中由 `deepseek-v4.1-flash` 模型协作完成；模型参与不构成 DeepSeek 官方发布或背书。
-- 完整贡献者名单：[Contributors](https://github.com/softbad123/sanguosha-channel-login/graphs/contributors)。
+- 完整贡献者与协作说明：[CONTRIBUTORS.md](CONTRIBUTORS.md)；GitHub 自动统计页：[Contributors](https://github.com/softbad123/sanguosha-channel-login/graphs/contributors)。
 - 维护者：softbad123。修改说明、第三方来源与许可证状态见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 1.4.1 更新

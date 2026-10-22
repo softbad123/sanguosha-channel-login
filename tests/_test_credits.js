@@ -9,6 +9,7 @@ const main = fs.readFileSync(path.join(root, '三国杀多渠道登录.user.js')
 const localReadme = path.join(root, 'README-多渠道说明.md');
 const readme = fs.readFileSync(fs.existsSync(localReadme) ? localReadme : path.join(root, 'README.md'), 'utf8');
 const notices = fs.readFileSync(path.join(root, 'THIRD_PARTY_NOTICES.md'), 'utf8');
+const contributors = fs.readFileSync(path.join(root, 'CONTRIBUTORS.md'), 'utf8');
 const license = fs.readFileSync(path.join(root, 'LICENSES', 'Apache-2.0.txt'), 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const sourceUrl = 'https://github.com/Clarrycy/jinnangmiaoji/blob/main/jinnangdai/payload/unified-login.user.js';
@@ -25,6 +26,9 @@ assert(main.includes('deepseek-v4.1-flash'), 'panel must disclose the AI collabo
 assert(readme.includes(sourceUrl), 'README must link to the pinned upstream source');
 assert(readme.includes('第一作者：**[@Clarrycy](https://github.com/Clarrycy)（暗鹊）**'), 'README must name @Clarrycy (暗鹊) as first author');
 assert(readme.includes('deepseek-v4.1-flash'), 'README must disclose the AI collaboration');
+assert(contributors.includes('https://github.com/Clarrycy'), 'contributors must link @Clarrycy');
+assert(contributors.includes('https://github.com/DeepSeek'), 'contributors must link @DeepSeek');
+assert(contributors.includes('deepseek-v4.1-flash'), 'contributors must disclose the AI collaboration');
 assert(notices.includes(sourceUrl), 'third-party notices must link to the pinned upstream source');
 assert(notices.includes('Apache License 2.0'), 'third-party notices must state the upstream license');
 assert(notices.includes('9d7dfc4833664eeb9eda17b7499e2a6667e8d8907b7c67b53cb10dc25affba73'), 'notices must record the verified source hash');

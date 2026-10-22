@@ -64,7 +64,7 @@
 - 第一作者：[@Clarrycy（暗鹊）](https://github.com/Clarrycy)，原始《统一登录器》源码作者；本项目并非其官方发布。
 - 维护者：[@softbad123](https://github.com/softbad123)。
 - 本项目在设计、实现、测试与文档整理过程中由 `deepseek-v4.1-flash` 模型协作完成；模型参与不构成 DeepSeek 官方发布或背书。
-- 完整贡献者名单见 [Contributors](https://github.com/softbad123/sanguosha-channel-login/graphs/contributors)。
+- 完整贡献者与协作说明见 [CONTRIBUTORS.md](https://github.com/softbad123/sanguosha-channel-login/blob/main/CONTRIBUTORS.md)；GitHub 自动统计页见 [Contributors](https://github.com/softbad123/sanguosha-channel-login/graphs/contributors)。
 - 修改说明、第三方来源与许可证状态见 [THIRD_PARTY_NOTICES.md](https://github.com/softbad123/sanguosha-channel-login/blob/main/THIRD_PARTY_NOTICES.md)。
 
 ## 已知限制
