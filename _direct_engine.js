@@ -1,7 +1,8 @@
 (() => {
   'use strict';
-  const VERSION = '1.4.4';
+  const VERSION = '1.4.6';
   const ORIGIN = 'https://web.sanguosha.com';
+  if (location.origin !== ORIGIN || window.top !== window) return;
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
   const SESSION_KEY = 'wegame.qq.session.v1';
   const SESSION_STORE_PREFIX = 'sgs-login-session-v3:';
@@ -154,7 +155,6 @@
   if (!page.__JND_HOST) page.__JND_HOST = {kind: 'micro', source: 'sgs-multichannel'};
   if (typeof page.__SGS_DIRECT_EVENT__ !== 'function') page.__SGS_DIRECT_EVENT__ = () => {};
   const EMBEDDED = page.__JND_HOST?.source === 'sgs-multichannel';
-  if (location.origin !== ORIGIN || window.top !== window) return;
 
   let diagnosticTraceId = '';
   let diagnosticProvider = '';

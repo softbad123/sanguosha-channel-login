@@ -1,8 +1,11 @@
 ﻿const fs=require('fs'),vm=require('vm');
 const src=fs.readFileSync('三国杀多渠道登录.user.js','utf8');
+const modelStart=src.indexOf('/* XIAOMI-SNS-MODEL-BEGIN */');
+const modelEnd=src.indexOf('/* XIAOMI-SNS-MODEL-END */',modelStart);
+if(modelStart<0||modelEnd<=modelStart) throw new Error('xiaomi SNS model missing');
 const start=src.indexOf('const ChannelRegistry = (() => {');
 const end=src.indexOf('})();', start)+'})();'.length;
-const block=src.slice(start,end);
+const block=src.slice(modelStart,modelEnd)+'\n'+src.slice(start,end);
 const ctx={Object,Array,Set,Map,URL,JSON,console};
 vm.createContext(ctx);
 vm.runInContext(block+'\nthis.__R=ChannelRegistry;',ctx);

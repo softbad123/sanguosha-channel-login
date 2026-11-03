@@ -17,9 +17,13 @@ if (!/location\.hostname === 'passport\.vivo\.com\.cn'[\s\S]{0,160}vivoPassportB
 }
 const start = source.indexOf('const ChannelRegistry = (() => {');
 const end = source.indexOf('})();', start) + '})();'.length;
+const modelStart = source.indexOf('/* XIAOMI-SNS-MODEL-BEGIN */');
+const modelEnd = source.indexOf('/* XIAOMI-SNS-MODEL-END */', modelStart);
+if (modelStart < 0 || modelEnd <= modelStart) throw new Error('xiaomi SNS model missing');
 const context = {Object, Array, Set, Map, URL, JSON, console};
 vm.createContext(context);
-vm.runInContext(source.slice(start, end) + '\nthis.__registry = ChannelRegistry;', context);
+vm.runInContext(source.slice(modelStart, modelEnd) + '\n' + source.slice(start, end) +
+  '\nthis.__registry = ChannelRegistry;', context);
 const registry = context.__registry;
 
 let failures = 0;

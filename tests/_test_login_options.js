@@ -5,9 +5,13 @@ const source = fs.readFileSync('三国杀多渠道登录.user.js', 'utf8');
 const start = source.indexOf('const ChannelRegistry = (() => {');
 const end = source.indexOf('})();', start) + '})();'.length;
 if (start < 0 || end < 5) throw new Error('registry not found');
-const context = {Object, Array, Set, Map, URL, JSON, console};
+const modelStart = source.indexOf('/* XIAOMI-SNS-MODEL-BEGIN */');
+const modelEnd = source.indexOf('/* XIAOMI-SNS-MODEL-END */', modelStart);
+if (modelStart < 0 || modelEnd <= modelStart) throw new Error('xiaomi SNS model not found');
+const context = {Object, Array, Set, Map, URL, URLSearchParams, JSON, Error, RegExp, String, console};
 vm.createContext(context);
-vm.runInContext(source.slice(start, end) + '\nthis.__registry = ChannelRegistry;', context);
+vm.runInContext(source.slice(modelStart, modelEnd) + '\n' + source.slice(start, end) +
+  '\nthis.__registry = ChannelRegistry;', context);
 const registry = context.__registry;
 
 let failures = 0;
@@ -35,7 +39,8 @@ for (const channel of registry.channels) {
     optionIds.add(option.id);
     if (labels.has(option.label)) fail(channel.id + ' duplicate label: ' + option.label);
     labels.add(option.label);
-    const signature = [option.kind, option.method || '', option.mode || '', option.page || '', option.provider || ''].join('|');
+    const signature = [option.kind, option.method || '', option.mode || '', option.page || '',
+      option.provider || '', option.sns || ''].join('|');
     if (signatures.has(signature)) fail(channel.id + ' duplicate target: ' + signature);
     signatures.add(signature);
     if (option.kind === 'disabled') fail(channel.id + ' exposes disabled option: ' + option.id);
@@ -49,13 +54,27 @@ const wxHint = registry.get('wegame')?.loginOptions.find(option => option.id ===
 if (wxHint !== '显示微信官方二维码') fail('wechat login hint must be exactly 显示微信官方二维码');
 const xiaomi = registry.get('xiaomi');
 const xiaomiOfficial = xiaomi?.loginOptions.find(option => option.id === 'xiaomi-official');
+const xiaomiQQ = xiaomi?.loginOptions.find(option => option.id === 'xiaomi-qq');
+const xiaomiWeixin = xiaomi?.loginOptions.find(option => option.id === 'xiaomi-weixin');
 if (!xiaomi || xiaomi.oauth?.authorize !== 'https://account.xiaomi.com/oauth2/authorize' ||
-  xiaomi.oauth?.loginEntry !== 'https://id.mi.com/') {
-  fail('xiaomi must use the official standard login entry that keeps the OAuth callback');
+  xiaomi.oauth?.loginEntry !== undefined) {
+  fail('xiaomi must not use the standard login page that drops the OAuth callback');
 }
-if (!xiaomiOfficial || xiaomiOfficial.kind !== 'oauth' || xiaomiOfficial.method !== 2 ||
-  !/QQ|微信/.test(xiaomiOfficial.hint || '')) {
-  fail('xiaomi official option must open the standard login page through method 2');
+if (!xiaomiOfficial || xiaomiOfficial.kind !== 'oauth' || xiaomiOfficial.method !== 1 ||
+  xiaomiOfficial.sns) {
+  fail('xiaomi default official option must use direct OAuth');
+}
+if (!xiaomiQQ || xiaomiQQ.kind !== 'oauth' || xiaomiQQ.method !== 2 || xiaomiQQ.sns !== 'qq' ||
+  !/QQ/.test(xiaomiQQ.label || '')) {
+  fail('xiaomi must expose a separate official QQ authorization option');
+}
+if (!xiaomiWeixin || xiaomiWeixin.kind !== 'oauth' || xiaomiWeixin.method !== 2 ||
+  xiaomiWeixin.sns !== 'weixin' || !/微信/.test(xiaomiWeixin.label || '')) {
+  fail('xiaomi must expose a separate official WeChat authorization option');
+}
+if (xiaomi?.oauth?.sns?.qq?.appid !== '100284651' || xiaomi?.oauth?.sns?.weixin?.appid !== 'wxxmzh' ||
+  xiaomi?.oauth?.sns?.weixin?.scope !== 'snsapi_login') {
+  fail('xiaomi official SNS application identifiers changed');
 }
 for (const method of ['QQ', '微信', '微博', '支付宝']) {
   if (!xiaomi?.standardLoginMethods.includes(method)) fail('xiaomi must advertise standard login method: ' + method);

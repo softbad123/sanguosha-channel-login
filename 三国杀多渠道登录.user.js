@@ -7,12 +7,13 @@
 // @supportURL   https://github.com/softbad123/sanguosha-channel-login/issues
 // @updateURL    https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
 // @downloadURL  https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
-// @version      1.4.4
-// @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和账号管理直达。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
+// @version      1.4.6
+// @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和小米 QQ / 微信授权。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
 // @match        https://web.sanguosha.com/*
 // @match        https://joint.vivo.com.cn/game-subaccount-login/*
 // @match        https://passport.vivo.com.cn/*
 // @match        https://game-login.heytap.com/game-union-h5/h5/client-login/*
+// @match        https://account.xiaomi.com/*
 // @match        http://game.xiaomi.com/oauthcallback/mioauth*
 // @match        https://game.xiaomi.com/oauthcallback/mioauth*
 // @match        https://10th-ly-login.sanguosha.com/steam/oauth/callback.html*
@@ -89,6 +90,120 @@
 (() => {
   'use strict';
   if (window.top !== window) return;
+  /* XIAOMI-SNS-MODEL-BEGIN */
+  const XIAOMI_SNS = Object.freeze({
+    origin: 'https://account.xiaomi.com',
+    authorizePath: '/oauth2/authorize',
+    loginPath: '/pass/sns/login/auth',
+    clientId: '2882303761517516898',
+    redirectUri: 'http://game.xiaomi.com/oauthcallback/mioauth',
+    scope: '1 3',
+    marker: 'sgs_sns',
+    requestPrefix: 'sgs-xiaomi-sns-request-v1:',
+    apps: Object.freeze({
+      qq: Object.freeze({label: 'QQ', appid: '100284651'}),
+      weixin: Object.freeze({label: '微信', appid: 'wxxmzh', scope: 'snsapi_login'})
+    })
+  });
+  const XiaomiSNSBridge = (() => {
+    const RESPONSE_MARKER = '&&&START&&&';
+    const MAX_RESPONSE = 65536;
+    function one(params, key) {
+      const values = params.getAll(key);
+      if (values.length !== 1) throw new Error('小米授权参数不完整');
+      return values[0];
+    }
+    function authorizeURL(raw) {
+      const url = new URL(String(raw));
+      if (url.protocol !== 'https:' || url.hostname !== 'account.xiaomi.com' || url.port ||
+        url.username || url.password || url.pathname !== XIAOMI_SNS.authorizePath || url.hash) {
+        throw new Error('不是小米游戏授权地址');
+      }
+      const sns = one(url.searchParams, XIAOMI_SNS.marker);
+      if (!Object.prototype.hasOwnProperty.call(XIAOMI_SNS.apps, sns)) {
+        throw new Error('不支持的第三方登录方式');
+      }
+      if (one(url.searchParams, 'client_id') !== XIAOMI_SNS.clientId ||
+        one(url.searchParams, 'response_type') !== 'code' ||
+        one(url.searchParams, 'redirect_uri') !== XIAOMI_SNS.redirectUri ||
+        one(url.searchParams, 'scope') !== XIAOMI_SNS.scope ||
+        one(url.searchParams, 'skip_confirm') !== 'false' ||
+        one(url.searchParams, '_json') !== 'true') {
+        throw new Error('小米游戏授权参数不匹配');
+      }
+      const state = one(url.searchParams, 'state');
+      if (!/^[a-f0-9]{32}$/.test(state) || url.searchParams.has('username') ||
+        url.searchParams.has('password')) throw new Error('小米授权状态校验失败');
+      const api = new URL(url.href);
+      api.searchParams.delete(XIAOMI_SNS.marker);
+      return Object.freeze({sns, state, apiURL: api.href});
+    }
+    function parseResponse(text) {
+      if (typeof text !== 'string' || text.length > MAX_RESPONSE) throw new Error('小米授权响应异常');
+      const index = text.indexOf(RESPONSE_MARKER);
+      if (index < 0) throw new Error('小米未返回可识别的授权数据');
+      try { return JSON.parse(text.slice(index + RESPONSE_MARKER.length)); }
+      catch (_) { throw new Error('小米授权响应无法解析'); }
+    }
+    function validateResponse(payload, expected) {
+      if (!payload || typeof payload !== 'object' || payload.code !== 70016 || payload.result !== 'login' ||
+        !payload.data || payload.data.sid !== 'oauth2.0' || typeof payload.data.callback !== 'string' ||
+        payload.data.callback.length > 8192) {
+        throw new Error('小米未返回第三方登录回调');
+      }
+      const callback = new URL(payload.data.callback);
+      if (callback.protocol !== 'https:' || callback.hostname !== 'account.xiaomi.com' || callback.port ||
+        callback.username || callback.password || callback.pathname !== '/sts/oauth' || callback.hash) {
+        throw new Error('小米第三方回调地址不安全');
+      }
+      if (callback.searchParams.get('sid') !== 'oauth2.0' ||
+        !/^[A-Za-z0-9+/=_-]{8,512}$/.test(callback.searchParams.get('sign') || '')) {
+        throw new Error('小米第三方回调签名缺失');
+      }
+      const followupValue = callback.searchParams.get('followup');
+      if (!followupValue || followupValue.length > 4096) throw new Error('小米第三方回调缺少授权目标');
+      const followup = new URL(followupValue);
+      if (followup.protocol !== 'https:' || followup.hostname !== 'account.xiaomi.com' || followup.port ||
+        followup.username || followup.password || followup.pathname !== XIAOMI_SNS.authorizePath || followup.hash ||
+        followup.searchParams.get('client_id') !== XIAOMI_SNS.clientId ||
+        followup.searchParams.get('response_type') !== 'code' ||
+        followup.searchParams.get('redirect_uri') !== XIAOMI_SNS.redirectUri ||
+        followup.searchParams.get('scope') !== XIAOMI_SNS.scope ||
+        followup.searchParams.get('skip_confirm') !== 'false' ||
+        followup.searchParams.get('state') !== expected.state) {
+        throw new Error('小米第三方回调与本次游戏授权不一致');
+      }
+      return payload.data.callback;
+    }
+    function loginURL(signedCallback, sns) {
+      const app = XIAOMI_SNS.apps[sns];
+      if (!app || typeof signedCallback !== 'string' || signedCallback.length > 8192) {
+        throw new Error('第三方登录参数不完整');
+      }
+      const target = new URL(XIAOMI_SNS.loginPath, XIAOMI_SNS.origin);
+      const params = {appid: app.appid, callback: signedCallback, sid: 'oauth2.0', _new: 'true', policyName: 'miaccount'};
+      if (app.scope) params.scope = app.scope;
+      target.search = new URLSearchParams(params).toString();
+      return target;
+    }
+    function bridgeWindowState(name) {
+      const match = /^sgs-xiaomi-([a-f0-9]{32})$/.exec(typeof name === 'string' ? name : '');
+      return match ? match[1] : '';
+    }
+    function pendingRequest(record, state, now = Date.now()) {
+      if (!record || record.v !== 1 || record.state !== state ||
+        !Number.isFinite(Number(record.expires)) || Number(record.expires) <= now ||
+        Number(record.expires) > now + 11 * 60 * 1000 || typeof record.authorization !== 'string') return null;
+      let authorization;
+      try { authorization = authorizeURL(record.authorization); }
+      catch (_) { return null; }
+      if (authorization.state !== state || authorization.sns !== record.sns) return null;
+      return authorization;
+    }
+    return Object.freeze({authorizeURL, parseResponse, validateResponse, loginURL,
+      bridgeWindowState, pendingRequest});
+  })();
+  /* XIAOMI-SNS-MODEL-END */
   const VIVO_PENDING_NONCE_KEY = 'sgs-vivo-pending-nonce-v1';
   const VIVO_PAGE_STATE_PREFIX = 'sgs-vivo-page-state-v1:';
   const STEAM_PAGE_RESULT_PREFIX = 'sgs-steam-page-result-v1:';
@@ -125,6 +240,84 @@
       const pending = GM_getValue(VIVO_PENDING_NONCE_KEY, null);
       if (!nonce || pending?.nonce === nonce) GM_deleteValue(VIVO_PENDING_NONCE_KEY);
     } catch (_) {}
+  }
+  function xiaomiSNSNotice(message, failed = false) {
+    const render = () => {
+      try {
+        const host = document.body || document.documentElement;
+        if (!host) return;
+        let notice = document.getElementById('sgs-xiaomi-sns-bridge');
+        if (!notice) {
+          notice = document.createElement('div');
+          notice.id = 'sgs-xiaomi-sns-bridge';
+          notice.setAttribute('role', 'status');
+          notice.style.cssText = 'box-sizing:border-box;margin:0;padding:32px 20px;min-height:100vh;' +
+            'background:#f5f5f7;color:#1d1d1f;font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
+          host.replaceChildren(notice);
+        }
+        notice.textContent = '小米第三方登录 · ' + message;
+        notice.style.color = failed ? '#b42318' : '#1d1d1f';
+      } catch (_) {}
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', render, {once: true});
+    else render();
+  }
+  async function xiaomiSNSChallenge(authorization, credentials, signal) {
+    const response = await fetch(authorization.apiURL, {credentials, cache: 'no-store', redirect: 'manual',
+      headers: {Accept: 'application/json'}, signal});
+    if (response.type === 'opaqueredirect' || !response.ok) return null;
+    const length = Number(response.headers.get('content-length') || 0);
+    if (length > 65536) throw new Error('响应过大');
+    const text = await response.text();
+    let payload;
+    try { payload = XiaomiSNSBridge.parseResponse(text); }
+    catch (error) {
+      // A logged-in browser can still receive an account page instead of the
+      // JSON challenge. Retry once without cookies to force a fresh challenge.
+      if (credentials === 'include') return null;
+      throw error;
+    }
+    if (!payload || payload.code !== 70016) return null;
+    return XiaomiSNSBridge.validateResponse(payload, authorization);
+  }
+  async function xiaomiSNSBridge() {
+    let requested;
+    try { requested = new URL(location.href); } catch (_) { return; }
+    const querySns = requested.searchParams.get(XIAOMI_SNS.marker) || '';
+    let authorization;
+    if (querySns) {
+      if (!Object.prototype.hasOwnProperty.call(XIAOMI_SNS.apps, querySns)) return;
+      try { authorization = XiaomiSNSBridge.authorizeURL(requested); }
+      catch (error) {
+        console.warn('[统一登录器] 小米第三方入口被拒绝', error?.message || error);
+        xiaomiSNSNotice('入口校验未通过，请回到游戏登录页重试。', true);
+        return;
+      }
+    } else {
+      const state = XiaomiSNSBridge.bridgeWindowState(window.name);
+      if (!state) return;
+      let stored;
+      try { stored = GM_getValue(XIAOMI_SNS.requestPrefix + state, null); } catch (_) { return; }
+      authorization = XiaomiSNSBridge.pendingRequest(stored, state);
+      if (!authorization) return;
+    }
+    const app = XIAOMI_SNS.apps[authorization.sns];
+    const requestKey = XIAOMI_SNS.requestPrefix + authorization.state;
+    xiaomiSNSNotice('正在连接 ' + app.label + ' 官方授权页…');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const callback = await xiaomiSNSChallenge(authorization, 'include', controller.signal) ||
+        await xiaomiSNSChallenge(authorization, 'omit', controller.signal);
+      if (!callback) throw new Error('小米未返回第三方登录回调');
+      location.replace(XiaomiSNSBridge.loginURL(callback, authorization.sns).href);
+    } catch (error) {
+      console.warn('[统一登录器] 小米第三方桥接失败', error?.message || error);
+      xiaomiSNSNotice('无法进入' + app.label + '官方授权页，请回到游戏登录页重试。', true);
+    } finally {
+      clearTimeout(timer);
+      try { GM_deleteValue(requestKey); } catch (_) {}
+    }
   }
   function vivoPassportBridge() {
     const nonce = vivoBridgeNonce();
@@ -445,6 +638,10 @@
       }, 130000);
     } catch (_) {}
   }
+  if (location.hostname === 'account.xiaomi.com') {
+    xiaomiSNSBridge();
+    return;
+  }
   if (location.hostname === 'passport.vivo.com.cn') {
     vivoPassportBridge();
     return;
@@ -467,7 +664,7 @@
     const now = Date.now();
     for (const key of GM_listValues()) {
       if (!key.startsWith('sgs-vivo-page-result-v1:') && !key.startsWith('sgs-oppo-page-result-v1:') &&
-        !key.startsWith(STEAM_PAGE_RESULT_PREFIX) &&
+        !key.startsWith(STEAM_PAGE_RESULT_PREFIX) && !key.startsWith(XIAOMI_SNS.requestPrefix) &&
         !key.startsWith(VIVO_PAGE_STATE_PREFIX)) continue;
       const value = GM_getValue(key, null);
       if (!value || !Number.isFinite(Number(value.expires)) || Number(value.expires) <= now) GM_deleteValue(key);
@@ -538,7 +735,7 @@ const ChannelRegistry = (() => {
     storagePrefix: 'sgs-xiaomi-v1:', accountPrefix: 'sgs-xiaomi-accounts-v1:',
     contextPrefix: 'sgs-xiaomi', windowPrefix: 'sgs-xiaomi',
     loginEndpoint: 'https://10th-sdk-login.sanguosha.com/xiaomi2/app/login',
-    reason: '已验证浏览器链路：小米官方标准登录页（含 QQ、微信、微博、支付宝等第三方授权）→ 小米 OAuth 回调 → 小米 SDK 会话 → 游卡渠道兑换 → 官网启动参数；服务器仍会校验全部票据。',
+    reason: '已验证浏览器链路：小米官方网页授权或标准登录页 → 小米 OAuth 回调 → 小米 SDK 会话 → 游卡渠道兑换 → 官网启动参数；服务器仍会校验全部票据。',
     protocol: 'yoka-xiaomi-v1',
     callback: {protocols: ['http:', 'https:'], hostname: 'game.xiaomi.com', pathname: '/oauthcallback/mioauth'},
     endpoints: {
@@ -549,9 +746,8 @@ const ChannelRegistry = (() => {
     },
     oauth: {
       authorize: 'https://account.xiaomi.com/oauth2/authorize',
-      loginEntry: 'https://id.mi.com/',
-      switchAccount: 'https://account.xiaomi.com/', sid: 'passport', clientId: '2882303761517516898',
-      scope: '1 3', redirectUri: 'http://game.xiaomi.com/oauthcallback/mioauth',
+      switchAccount: 'https://account.xiaomi.com/', sid: 'passport', clientId: XIAOMI_SNS.clientId,
+      scope: XIAOMI_SNS.scope, redirectUri: XIAOMI_SNS.redirectUri, sns: XIAOMI_SNS.apps,
       params: {skip_confirm: 'false'}
     },
     standardLoginMethods: ['账号密码', '短信验证码', '扫码', 'QQ', '微信', '微博', '支付宝'],
@@ -560,8 +756,12 @@ const ChannelRegistry = (() => {
     loginOptions: [
       {id: 'xiaomi-qr', label: '小米扫码登录', kind: 'direct',
         hint: '在屏幕中央弹窗显示小米官方二维码'},
-      {id: 'xiaomi-official', label: '小米官方网页登录', kind: 'oauth', method: 2,
-        hint: '含 QQ、微信、微博、支付宝'}
+      {id: 'xiaomi-official', label: '小米官方网页登录', kind: 'oauth', method: 1,
+        hint: '已登录小米账号可直接授权'},
+      {id: 'xiaomi-qq', label: 'QQ 登录', kind: 'oauth', method: 2, sns: 'qq',
+        hint: '已有小米登录态也会直接进入 QQ 官方授权'},
+      {id: 'xiaomi-weixin', label: '微信登录', kind: 'oauth', method: 2, sns: 'weixin',
+        hint: '已有小米登录态也会直接进入微信官方扫码'}
     ],
     requestPolicy: [
       {origin: 'https://account.migc.g.mi.com', paths: ['/misdk/v2/oauth', '/migc-sdk-account/getLoginAppAccount_v2']},
@@ -1841,18 +2041,21 @@ const ChannelCore = (() => {
       }
     };
   }
-  function authorization(state, method = 1, channelId) {
+  function authorization(state, method = 1, channelId, sns = '') {
     const channel = requireBrowser(channelId), oauth = channel.oauth;
     if (!oauth) throw new Error(channel.name + '渠道尚未配置官方 OAuth 入口');
-    const authorization = new URL(oauth.authorize);
-    authorization.search = new URLSearchParams({...(oauth.params || {}), client_id: oauth.clientId,
-      response_type: 'code', scope: oauth.scope, redirect_uri: oauth.redirectUri, state}).toString();
-    let loginEntry = null;
-    if (oauth.loginEntry) {
-      loginEntry = new URL(oauth.loginEntry);
-      loginEntry.search = new URLSearchParams({sid: oauth.sid, callback: authorization.href}).toString();
+    if (sns && (!oauth.sns || !Object.prototype.hasOwnProperty.call(oauth.sns, sns))) {
+      throw new Error(channel.name + '渠道没有配置该第三方登录方式');
     }
-    return {authorization, loginEntry, method};
+    const authorization = new URL(oauth.authorize);
+    const params = {...(oauth.params || {}), client_id: oauth.clientId,
+      response_type: 'code', scope: oauth.scope, redirect_uri: oauth.redirectUri, state};
+    if (sns) {
+      params._json = 'true';
+      params[XIAOMI_SNS.marker] = sns;
+    }
+    authorization.search = new URLSearchParams(params).toString();
+    return {authorization, method, sns};
   }
   return {
     use, active: () => active, get: id => ChannelRegistry.get(id), channels: () => ChannelRegistry.channels,
@@ -1875,7 +2078,7 @@ const ChannelCore = (() => {
   const LEGACY_TRANSIENT_PROFILE_KEY = CHANNEL.contextPrefix + '-transient-profile-v1';
   const LOGIN_PAGE = 'https://web.sanguosha.com/login/10th_client/index.html';
   const PENDING_ACCOUNT_KEY = 'sgs-unified-pending-account-v1';
-  const VERSION = '1.4.4';
+  const VERSION = '1.4.6';
   const NETWORK_TIMEOUT = 60000;
   const GAME_ROUTE_PATTERN = /^\/(?:x|10|10th|login)\/pc\//;
   const OFFICIAL_LOGIN_ROUTE_PATTERN = /^\/login\/(?:(?:10th_client|x)(?:\/index(?:\.html)?)?|index(?:\.html)?)\/?$/;
@@ -3937,6 +4140,10 @@ const ChannelCore = (() => {
     const providerName = hint.provider || profile?.lastLoginProvider;
     const byId = optionId ? available.find(option => option.id === optionId) : null;
     if (byId) return byId;
+    if (owner.id === 'xiaomi' && optionId === 'xiaomi-third-party') {
+      return available.find(option => option.sns === providerName) ||
+        available.find(option => option.id === 'xiaomi-qq') || available[0];
+    }
     if (providerName) {
       const byProvider = available.find(option => directProvider(option) === providerName);
       if (byProvider) return byProvider;
@@ -4581,7 +4788,7 @@ const ChannelCore = (() => {
     for (const rule of CHANNEL.requestPolicy) origins.add(rule.origin);
     for (const endpoint of Object.values(CHANNEL.endpoints)) { try { origins.add(new URL(endpoint).origin); } catch (_) {} }
     if (CHANNEL.oauth) {
-      for (const key of ['authorize', 'loginEntry', 'switchAccount']) if (CHANNEL.oauth[key]) {
+      for (const key of ['authorize', 'switchAccount']) if (CHANNEL.oauth[key]) {
         try { origins.add(new URL(CHANNEL.oauth[key]).origin); } catch (_) {}
       }
     }
@@ -4650,8 +4857,18 @@ const ChannelCore = (() => {
       automatic: !!runOptions.automatic, loginOptionId: optionId, loginProvider: CHANNEL.id, loginMethod: '官方授权'};
     active = context; busy(true);
     GM_setValue(pendingKey(context.state), {expires: Date.now() + 10 * 60 * 1000});
-    const entry = ChannelCore.authorization(context.state, loginMethod, CHANNEL.id);
-    const authorization = entry.authorization, loginEntry = entry.loginEntry;
+    const option = CHANNEL.loginOptions.find(item => item.id === optionId);
+    const entry = ChannelCore.authorization(context.state, loginMethod, CHANNEL.id,
+      option?.sns || '');
+    const authorization = entry.authorization;
+    const snsApp = entry.sns ? XIAOMI_SNS.apps[entry.sns] : null;
+    if (snsApp) context.loginMethod = snsApp.label + '官方授权';
+    if (snsApp) {
+      try {
+        GM_setValue(XIAOMI_SNS.requestPrefix + context.state, {v: 1, state: context.state,
+          sns: entry.sns, authorization: authorization.href, expires: Date.now() + 10 * 60 * 1000});
+      } catch (_) {}
+    }
     try {
       const waiting = waitForCode(context);
       waiting.catch(() => {}); // Also handle cancellation before the popup has opened.
@@ -4663,13 +4880,12 @@ const ChannelCore = (() => {
         throw new Error('浏览器拦截了登录窗口，请允许此官网弹出窗口后重试');
       }
       context.popup.opener = null;
-      context.popup.location.replace(loginMethod === 2 && loginEntry ? loginEntry.href : authorization.href);
+      context.popup.location.replace(authorization.href);
       watchLoginPopup(context, '已关闭' + CHANNEL.name + '官方授权窗口，本次登录已取消；可重新选择登录方式。',
         [resultKey(context.state)]);
-      status(loginMethod === 2 && loginEntry
-        ? '请在' + CHANNEL.name + '官方标准登录页使用页面提供的登录方式'
-          + (CHANNEL.standardLoginMethods.length ? '（可能包括' + CHANNEL.standardLoginMethods.join('、') + '）' : '')
-          + '登录；凭据只输入官方页面，完成后会自动继续游戏授权。若需换号，请先使用“切换' + CHANNEL.name + '账号”。'
+      status(snsApp
+        ? '正在打开' + snsApp.label + '官方授权页；已有小米登录态也会直接进入' + snsApp.label
+          + '授权，完成后自动回到游戏接入流程。'
         : '请在新窗口完成' + CHANNEL.name + '官方授权；完成后会自动回到游戏接入流程。');
       let code = await waiting;
       if (context.popup) { try { context.popup.close(); } catch (_) {} }
@@ -5286,8 +5502,9 @@ const ChannelCore = (() => {
 /* DIRECT-ENGINE-BEGIN */
 (() => {
   'use strict';
-  const VERSION = '1.4.4';
+  const VERSION = '1.4.6';
   const ORIGIN = 'https://web.sanguosha.com';
+  if (location.origin !== ORIGIN || window.top !== window) return;
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
   const SESSION_KEY = 'wegame.qq.session.v1';
   const SESSION_STORE_PREFIX = 'sgs-login-session-v3:';
@@ -5440,7 +5657,6 @@ const ChannelCore = (() => {
   if (!page.__JND_HOST) page.__JND_HOST = {kind: 'micro', source: 'sgs-multichannel'};
   if (typeof page.__SGS_DIRECT_EVENT__ !== 'function') page.__SGS_DIRECT_EVENT__ = () => {};
   const EMBEDDED = page.__JND_HOST?.source === 'sgs-multichannel';
-  if (location.origin !== ORIGIN || window.top !== window) return;
 
   let diagnosticTraceId = '';
   let diagnosticProvider = '';
