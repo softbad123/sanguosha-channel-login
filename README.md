@@ -2,7 +2,7 @@
 
 在三国杀网页版登录页提供一个统一的多渠道登录面板，把当前浏览器会话接到渠道官方的扫码、网页授权和游卡兑换链路，并在本机提供账号管理与快速直登。
 
-当前版本：`1.4.3`
+当前版本：`1.4.4`
 支持渠道：小米、Vivo、OPPO、华为、荣耀、哔哩哔哩、WeGame、应用宝、Steam（共 9 个）<br>
 运行方式：Tampermonkey 用户脚本（Chrome / Edge / QQ 浏览器极速模式）
 
@@ -19,18 +19,33 @@
 - 完整贡献者与协作说明：[CONTRIBUTORS.md](CONTRIBUTORS.md)；GitHub 自动统计页：[Contributors](https://github.com/softbad123/sanguosha-channel-login/graphs/contributors)。
 - 维护者：softbad123。修改说明、第三方来源与许可证状态见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
+## 1.4.4 更新
+
+`1.4.4` 修正小米官方网页登录的第三方授权入口。此前配置直接打开 `account.xiaomi.com/oauth2/authorize`，该页只提供小米账号密码、手机号和扫码；QQ、微信、微博、支付宝入口实际位于 `id.mi.com` 标准登录页。现在由标准登录页携带完整 `callback` 和随机 `state`，已实测点击 QQ 后进入 `graph.qq.com` 快捷授权页，回跳参数仍保持完整。
+
+- OPPO 多角色归属比较改为字符串归一化，避免官方响应把同一 `userId` 返回成数字和字符串时误判为不属于当前账号。
+- OPPO / Vivo 的账号记录改用用户实际选中的子账号 ID 生成稳定指纹；同一父账号下的两个小号即使最终得到相同的 `grant.account`，也会保留为两条独立账号记录，不再互相覆盖昵称、角色或恢复会话。
+- 新增小米标准登录入口测试：`loginEntry`、`sid=passport`、完整 OAuth `callback` 与 `state` 必须同时保留。
+- 新增 OPPO 完整选择链路测试：选择第二个 `ssoid` 后，AnySDK `data.uid` 必须是第二个；两次选择分别到达不同最终 `grant.account`。
+- 新增子账号身份隔离测试：不同子账号共享最终 `grant.account`、同一子账号重复登录、旧版记录迁移、选错子账号拦截和账号簿双记录保存。
+- `npm test` 的 38 项回归测试全部通过。
+
+验证边界：QQ 仅验证到官方快捷授权页，没有替用户点击头像完成授权；OPPO / Vivo 多小号仍是代码级和端点级验证，当前没有真实多小号账号做端到端实证。详细说明见 [`docs/RELEASE-v1.4.4.md`](docs/RELEASE-v1.4.4.md)。
+
 ## 1.4.3 更新
 
-`1.4.3` 修复渠道账号下存在多个游戏角色或小号时无法继续登录的问题。OPPO 与 Vivo 现在会列出官方响应中可用的账号，只有用户明确选择后才继续兑换；小米官方网页登录同时明确支持小米页面上已绑定的 QQ、微信等第三方授权。
+`1.4.3` 修复渠道账号下存在多个游戏角色或小号时无法继续登录的问题。OPPO 与 Vivo 现在会列出官方响应中可用的账号，只有用户明确选择后才继续兑换。该版小米官方网页登录只对齐了 OAuth 授权入口，实际没有打开 QQ / 微信入口；该缺口由 `1.4.4` 修正。
 
 详细发布说明与测试记录见 [`docs/RELEASE-v1.4.3.md`](docs/RELEASE-v1.4.3.md)。
 
 ### 多账号与小号
 
+- 本文所称“小号”是同一渠道父账号下绑定的多个游戏子账号，不是同一渠道的多个标签页或窗口（多开）。多开使用独立会话，不能证明同一父账号下的小号已经被正确区分。
 - OPPO 不再要求 `gameAccounts` 只能有一项。脚本只保留当前 OPPO 账号本人、同一三国杀包且没有共享或额外安全确认标记的角色，并在多个可用角色时显示选择弹窗。
 - Vivo 不再要求只有一个 `lastLogin` 子账号。脚本会列出全部未冻结小号，并把用户明确选中的 `subOpenId` 交给官方 `/h5/union/use`；保存账号直登仍要求恢复同一个 UID，不会自动切换。
+- 账号身份以所选 OPPO `ssoid` 或 Vivo `subOpenId` 的哈希指纹为准。相同父账号下的不同小号不会因为最终 `grant.account` 相同而被合并；选择 A 后又授权 B 会在凭证写入前被拦截，必须明确切换或添加账号。
 - 选择器使用隔离 Shadow DOM 和 `textContent` 渲染，账号 ID 仅显示掩码后缀；支持键盘导航、`Esc`、遮罩和取消按钮，取消不会留下半完成登录。
-- 小米官方网页登录复用参考实现相同的 `oauth2/authorize` 入口与参数，支持小米官方页面提供的 QQ、微信等已绑定第三方授权；该问题是授权入口对齐，不是多账号列表问题。
+- 小米官方网页登录现通过 `id.mi.com` 标准登录页打开 QQ、微信、微博、支付宝入口；凭据和协议勾选只在官方页面完成，脚本不代填。
 
 ### 搜索范围与结论
 
@@ -39,7 +54,7 @@
 
 ### 验证
 
-- `npm test` 的 36 项回归测试全部通过；账号选择测试覆盖 OPPO/Vivo 单账号、多账号、安全标记过滤、掩码、选择后票据绑定和取消清理。
+- `npm test` 的 38 项回归测试全部通过；账号选择测试覆盖 OPPO/Vivo 单账号、多账号、安全标记过滤、掩码、选择后票据绑定、OPPO 完整 `ssoid → data.uid → grant.account` 链路和取消清理；子账号身份测试覆盖共享 `grant.account` 下的记录隔离与恢复。
 
 ## 1.4.2 更新
 
@@ -244,7 +259,7 @@
 3. 下载固定更新地址中的 [`sanguosha-channel-login.user.js`](https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js)，在 Tampermonkey 中导入并启用。Release 中可能同时提供带版本号的副本，内容相同。
 4. 停用或删除旧的“小米服登录器”“统一登录器”以及旧版“三国杀多渠道登录”脚本，避免同页重复注入。
 5. 打开 <https://web.sanguosha.com/login/10th_client/index.html>。
-6. 页面右侧出现登录面板后，确认页脚显示 `v1.4.3 · 9 个渠道`。
+6. 页面右侧出现登录面板后，确认页脚显示 `v1.4.4 · 9 个渠道`。
 
 ### 方式二：从源码安装
 
@@ -333,7 +348,7 @@ QQ 浏览器授权没有返回应用宝校验所需的 `pay_token`。脚本会�
 
 **登录后进入加载页，又返回主登录页**
 
-`1.1.3` 已修复 WeGame 的 `PlatformID` 凭证误判；`1.1.4` 又修复了 QQ 浏览器丢失 `window.name` 后交接无法恢复，以及回退到经典 OL 登录页的问题。若仍复现，请先确认版本为 `1.4.3`、Tampermonkey 为 `5.5.1+`、没有同时启用旧版登录脚本，再从“运行记录”复制或导出反馈日志；日志中会显示失败所在的流程、阶段、错误码、源码行列号和 `cause` 链，便于直接定位。QQ 浏览器慢网下请给官方请求和游戏加载最多 4 分钟，不要连续重复点击登录。
+`1.1.3` 已修复 WeGame 的 `PlatformID` 凭证误判；`1.1.4` 又修复了 QQ 浏览器丢失 `window.name` 后交接无法恢复，以及回退到经典 OL 登录页的问题。若仍复现，请先确认版本为 `1.4.4`、Tampermonkey 为 `5.5.1+`、没有同时启用旧版登录脚本，再从“运行记录”复制或导出反馈日志；日志中会显示失败所在的流程、阶段、错误码、源码行列号和 `cause` 链，便于直接定位。QQ 浏览器慢网下请给官方请求和游戏加载最多 4 分钟，不要连续重复点击登录。
 
 **慢网络下如何理解超时**
 
@@ -356,7 +371,8 @@ QQ 浏览器授权没有返回应用宝校验所需的 `pay_token`。脚本会�
 - `tests/_test_official_autocollapse.js` 校验主登录页不因官服选择器自动折叠、自动展开开关的持久化与状态恢复、点击“进入游戏”会折叠、手动展开不屏蔽下一次登录，以及游戏页保持成功登录后的折叠状态。
 - `tests/_test_login_success_prompt.js` 校验游戏页成功提示居中显示、游戏路由与实际渠道校准、路由和运行时冲突时中性降级、同一登录只提示一次、提示期间面板延迟隐藏、提示自动关闭，以及登录页不提前提示。
 - `tests/_test_account_display.js` 校验游戏内 ID、备注、上次登录格式及整行选中高亮结构。
-- `tests/_test_account_choice.js` 校验 OPPO / Vivo 多角色选择、安全标记过滤、账号 ID 掩码、选中票据绑定与取消清理。
+- `tests/_test_account_choice.js` 校验 OPPO / Vivo 多角色选择、安全标记过滤、账号 ID 掩码、选中票据绑定、OPPO 完整兑换链路与取消清理。
+- `tests/_test_xiaomi_login_entry.js` 校验小米标准登录入口携带 `sid`、完整 OAuth `callback` 和随机 `state`，并确认官方入口使用方法 2。
 - `tests/_test_game_identity_probe.js` 校验主世界探针注入位置、`scriptContent` / 脚本 `text` 入口、协议回调、身份缓存合并与重复事件抑制。
 - `tests/_test_game_identity_apply.js` 校验游戏内 ID 写入账号记录、状态切换、自动折叠和同一身份去重。
 - `tests/_test_account_open_window.js` 校验账号管理在 `waiting / loading / failed / disconnected` 下重试本地直登，以及 `connected` 窗口不重复启动登录。

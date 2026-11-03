@@ -50,12 +50,15 @@ if (wxHint !== '显示微信官方二维码') fail('wechat login hint must be ex
 const xiaomi = registry.get('xiaomi');
 const xiaomiOfficial = xiaomi?.loginOptions.find(option => option.id === 'xiaomi-official');
 if (!xiaomi || xiaomi.oauth?.authorize !== 'https://account.xiaomi.com/oauth2/authorize' ||
-  xiaomi.oauth?.loginEntry) {
-  fail('xiaomi must use only the pinned official OAuth authorization entry');
+  xiaomi.oauth?.loginEntry !== 'https://id.mi.com/') {
+  fail('xiaomi must use the official standard login entry that keeps the OAuth callback');
 }
-if (!xiaomiOfficial || xiaomiOfficial.kind !== 'oauth' || xiaomiOfficial.method !== 1 ||
+if (!xiaomiOfficial || xiaomiOfficial.kind !== 'oauth' || xiaomiOfficial.method !== 2 ||
   !/QQ|微信/.test(xiaomiOfficial.hint || '')) {
-  fail('xiaomi official option must advertise QQ/WeChat authorization through method 1');
+  fail('xiaomi official option must open the standard login page through method 2');
+}
+for (const method of ['QQ', '微信', '微博', '支付宝']) {
+  if (!xiaomi?.standardLoginMethods.includes(method)) fail('xiaomi must advertise standard login method: ' + method);
 }
 if (xiaomi?.oauth?.clientId !== '2882303761517516898' || xiaomi?.oauth?.redirectUri !==
   'http://game.xiaomi.com/oauthcallback/mioauth' || xiaomi?.oauth?.scope !== '1 3' ||

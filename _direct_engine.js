@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const VERSION = '1.4.3';
+  const VERSION = '1.4.4';
   const ORIGIN = 'https://web.sanguosha.com';
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
   const SESSION_KEY = 'wegame.qq.session.v1';
@@ -1956,6 +1956,11 @@
       buttons[0]?.focus();
     });
   }
+  function selectedSubaccount(a) {
+    if (a?.provider === 'oppo') return {id: a.oppo?.ssoid || '', name: a.oppo?.accountName || ''};
+    if (a?.provider === 'vivo') return {id: a.vivo?.uid || '', name: a.vivo?.accountName || ''};
+    return {id: '', name: ''};
+  }
   function emitDirectEvent(event) {
     const token = event?.clientToken || attempt?.clientToken || boundClientToken || '';
     try { return page.__SGS_DIRECT_EVENT__({...event, clientToken: token}); } catch (_) { return ''; }
@@ -3101,7 +3106,8 @@
       description: '同一 Vivo 账号下检测到多个可用小号。请选择本次要进入的小号，脚本不会替你猜测。',
       notice: 'Vivo 账号有多个可用小号，请在页面弹窗中选择。', accounts});
     active(a);
-    return uid;
+    const selected = accounts.find(account => account.id === uid);
+    return {uid, name: selected?.name || ''};
   }
   function vivoSavedAccountChoice(value, realName, savedUid) {
     const stage = 'vivo_account';
@@ -3115,6 +3121,7 @@
     assert(account, 'ACCOUNT_MISMATCH', stage);
     assert(!account.frozenFlag, 'VIVO_ACCOUNT_UNAVAILABLE', stage);
     return {uid: fields(account, ['subOpenId'], stage).subOpenId,
+      name: choiceText(account.nickName, 64) || choiceText(account.subRole, 64),
       username: typeof value.data?.nickName === 'string' ? value.data.nickName.slice(0, 1024) : '',
       openId: typeof value.data?.openId === 'string' ? value.data.openId.slice(0, 1024) : ''};
   }
@@ -3142,7 +3149,7 @@
       'VIVO_NATIVE_CONFIRMATION_REQUIRED', stage);
     assert(typeof used.data === 'string' && used.data.length > 0 && used.data.length <= 4096,
       'RESPONSE_SCHEMA_CHANGED', stage);
-    a.vivo = {...saved, uid: chosen.uid, session: used.data,
+    a.vivo = {...saved, uid: chosen.uid, session: used.data, accountName: chosen.name || saved.accountName || '',
       username: saved.username || chosen.username, openId: chosen.openId || saved.openId || ''};
     reportDiagnostic({level: 'info', stage: 'vivo_browser_refresh', mode: 'restore',
       message: '已通过 Vivo 官方浏览器登录态更新临时凭证。', uidMatched: true});
@@ -3165,14 +3172,16 @@
         if (!a.vivoAuthorized) await authorizeVivo(a);
         const account = await accountRequest('/h5/union/get', values);
         const realName = await accountRequest('/h5/account/realName', values, false, false);
-        const uid = await vivoAccountChoice(a, account, realName);
+        const chosen = await vivoAccountChoice(a, account, realName);
+        const uid = chosen.uid;
         const used = await accountRequest('/h5/union/use', {...values, subOpenId: uid,
           ...(account.extraInfo ? {extraInfo: account.extraInfo} : {})}, true);
         assert(!used.extraData?.minor && !used.extraData?.forceNative && !used.noticeData?.content && used.vipRecall !== 1,
           'VIVO_NATIVE_CONFIRMATION_REQUIRED', 'vivo_account');
         assert(typeof used.data === 'string' && used.data.length > 0 && used.data.length <= 4096,
           'RESPONSE_SCHEMA_CHANGED', 'vivo_account');
-        a.vivo = {uid, session: used.data, username: String(account.data.nickName || ''),
+        a.vivo = {uid, session: used.data, accountName: chosen.name,
+          username: String(account.data.nickName || ''),
           openId: String(account.data.openId || '')};
         a.cookies.clear(); delete a.vivoConfirmed; delete a.vivoAuthorized; delete a.vivoIdentity;
       }
@@ -3211,7 +3220,10 @@
       const grant = validateGrant(r.data);
       assert(!a.account || a.account === grant.account, 'ACCOUNT_MISMATCH', 'sgs_grant');
       a.account = grant.account; a.grant = grant; a.grantExpires = Date.now() + 90000;
-      remember(a);
+      // A fresh OPPO/Vivo authorization may select a sibling subaccount. Do not
+      // store it under a preselected profile until the host verifies the ready
+      // event's ssoid/subOpenId. A restore already carries the exact subaccount.
+      if (a.restored) remember(a);
     }
     return a.grant;
   }
@@ -4364,7 +4376,10 @@
       const grant = await exchangeOppoGrant(a);
       assert(!a.account || a.account === grant.account, 'ACCOUNT_MISMATCH', 'sgs_grant');
       a.account = grant.account; a.grant = grant; a.grantExpires = Date.now() + 90000;
-      remember(a);
+      // Defer persistence on a fresh authorization until the host confirms the
+      // selected subaccount. This prevents a mismatched account from overwriting
+      // the preselected profile before the ready-event conflict check.
+      if (a.restored) remember(a);
     }
     return a.grant;
   }
@@ -4416,7 +4431,10 @@
     const sgsGames = games.filter(game => game && game.pkgName === 'com.sgs10th.nearme.gamecenter');
     assert(sgsGames.length > 0, 'OPPO_GAME_PACKAGE_MISMATCH', stage);
     const parent = fields(value.userDto, ['userId'], stage).userId;
-    const owned = sgsGames.filter(game => game.userId === parent);
+    // The SDK has shipped userId as both a JSON number and a string. Compare
+    // normalized identifiers so a valid role is never hidden by a type-only
+    // mismatch between userDto and gameAccounts.
+    const owned = sgsGames.filter(game => String(game.userId ?? '') === parent);
     assert(owned.length > 0, 'OPPO_GAME_ACCOUNT_OWNER_MISMATCH', stage);
     // Only accounts owned by the signed-in OPPO user and free of an explicit
     // server-side confirmation gate are offered. Never default to a shared or
@@ -4998,14 +5016,22 @@
     a.stage = 'ready'; ui.output.textContent = '扫码成功';
     let returnedProfileId = '';
     try {
+      const subaccount = selectedSubaccount(a);
       returnedProfileId = emitDirectEvent({
         type: 'ready', provider: a.provider, account: a.account || '',
         identityAccount: a.provider === 'xiaomi' ? (a.xiaomi?.uid || '') : '',
-        nickname: a.provider === 'xiaomi' ? (a.xiaomi?.username || '') : '', clientToken: a.clientToken
+        subaccountId: subaccount.id,
+        nickname: a.provider === 'xiaomi' ? (a.xiaomi?.username || '') : subaccount.name,
+        clientToken: a.clientToken
       }) || '';
     } catch (_) {}
+    // A fresh flow must bind only the profile id explicitly accepted by the
+    // host. Falling back to a preselected profile here would let a sibling
+    // subaccount overwrite it when the host rejects the ready event. Restores
+    // already carry the exact saved profile and may safely reuse it.
+    const fallbackProfileId = a.restored ? (a.__sgsProfileId || a.profileId || '') : '';
     const profileId = SESSION_PROFILE_PATTERN.test(returnedProfileId) ? returnedProfileId :
-      (SESSION_PROFILE_PATTERN.test(a.__sgsProfileId || a.profileId || '') ? (a.__sgsProfileId || a.profileId) : '');
+      (SESSION_PROFILE_PATTERN.test(fallbackProfileId) ? fallbackProfileId : '');
     if (profileId) bindProfile(profileId, a.clientToken, a.saveSession !== false);
   }
   // Presentation from https://login.dobest.cn/sdo/Logout/appLogout.php,

@@ -7,7 +7,7 @@
 // @supportURL   https://github.com/softbad123/sanguosha-channel-login/issues
 // @updateURL    https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
 // @downloadURL  https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
-// @version      1.4.3
+// @version      1.4.4
 // @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和账号管理直达。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
 // @match        https://web.sanguosha.com/*
 // @match        https://joint.vivo.com.cn/game-subaccount-login/*
@@ -538,7 +538,7 @@ const ChannelRegistry = (() => {
     storagePrefix: 'sgs-xiaomi-v1:', accountPrefix: 'sgs-xiaomi-accounts-v1:',
     contextPrefix: 'sgs-xiaomi', windowPrefix: 'sgs-xiaomi',
     loginEndpoint: 'https://10th-sdk-login.sanguosha.com/xiaomi2/app/login',
-    reason: '已验证浏览器链路：小米官方 OAuth（可使用 QQ、微信等已绑定的第三方授权）→ 小米 SDK 会话 → 游卡渠道兑换 → 官网启动参数；服务器仍会校验全部票据。',
+    reason: '已验证浏览器链路：小米官方标准登录页（含 QQ、微信、微博、支付宝等第三方授权）→ 小米 OAuth 回调 → 小米 SDK 会话 → 游卡渠道兑换 → 官网启动参数；服务器仍会校验全部票据。',
     protocol: 'yoka-xiaomi-v1',
     callback: {protocols: ['http:', 'https:'], hostname: 'game.xiaomi.com', pathname: '/oauthcallback/mioauth'},
     endpoints: {
@@ -549,18 +549,19 @@ const ChannelRegistry = (() => {
     },
     oauth: {
       authorize: 'https://account.xiaomi.com/oauth2/authorize',
+      loginEntry: 'https://id.mi.com/',
       switchAccount: 'https://account.xiaomi.com/', sid: 'passport', clientId: '2882303761517516898',
       scope: '1 3', redirectUri: 'http://game.xiaomi.com/oauthcallback/mioauth',
       params: {skip_confirm: 'false'}
     },
-    standardLoginMethods: ['账号密码', '短信验证码', '扫码'],
+    standardLoginMethods: ['账号密码', '短信验证码', '扫码', 'QQ', '微信', '微博', '支付宝'],
     authMode: 'oauth',
     accountPage: 'https://account.xiaomi.com/pass/serviceLogin',
     loginOptions: [
       {id: 'xiaomi-qr', label: '小米扫码登录', kind: 'direct',
         hint: '在屏幕中央弹窗显示小米官方二维码'},
-      {id: 'xiaomi-official', label: '小米官方网页登录', kind: 'oauth', method: 1,
-        hint: '含 QQ、微信等第三方授权'}
+      {id: 'xiaomi-official', label: '小米官方网页登录', kind: 'oauth', method: 2,
+        hint: '含 QQ、微信、微博、支付宝'}
     ],
     requestPolicy: [
       {origin: 'https://account.migc.g.mi.com', paths: ['/misdk/v2/oauth', '/migc-sdk-account/getLoginAppAccount_v2']},
@@ -1765,7 +1766,7 @@ const ChannelCore = (() => {
       const next = Object.assign({id, channelId: owner.id, windowKey: makeId(), createdAt: now()}, old || {}, {channelId: owner.id});
       // Persist only the explicit metadata fields, never arbitrary protocol objects.
       for (const field of ['alias', 'nickname', 'roleName', 'roleId', 'serverId', 'zoneNote', 'channelAccount',
-        'lastLoginMethod', 'lastLoginOption', 'lastLoginProvider']) {
+        'lastLoginMethod', 'lastLoginOption', 'lastLoginProvider', 'providerKey']) {
         if (Object.prototype.hasOwnProperty.call(changes, field)) next[field] = clean(changes[field]);
       }
       if (Object.prototype.hasOwnProperty.call(changes, 'loginAccount')) next.loginAccount = clean(changes.loginAccount, 256);
@@ -1822,7 +1823,8 @@ const ChannelCore = (() => {
     }
     return {
       get, update, profiles, validId, ref, parseRef, channelForProfile,
-      register: identity => update(identity.id, {nickname: identity.nickname, lastAuthorizedAt: now()}, true, channel.id),
+      register: identity => update(identity.id, {nickname: identity.nickname, providerKey: identity.providerKey,
+        lastAuthorizedAt: now()}, true, channel.id),
       remove: (id, wantedChannel = '') => {
         const found = locate(id, wantedChannel);
         if (found) storage.remove(found.key);
@@ -1873,7 +1875,7 @@ const ChannelCore = (() => {
   const LEGACY_TRANSIENT_PROFILE_KEY = CHANNEL.contextPrefix + '-transient-profile-v1';
   const LOGIN_PAGE = 'https://web.sanguosha.com/login/10th_client/index.html';
   const PENDING_ACCOUNT_KEY = 'sgs-unified-pending-account-v1';
-  const VERSION = '1.4.3';
+  const VERSION = '1.4.4';
   const NETWORK_TIMEOUT = 60000;
   const GAME_ROUTE_PATTERN = /^\/(?:x|10|10th|login)\/pc\//;
   const OFFICIAL_LOGIN_ROUTE_PATTERN = /^\/login\/(?:(?:10th_client|x)(?:\/index(?:\.html)?)?|index(?:\.html)?)\/?$/;
@@ -2322,6 +2324,7 @@ const ChannelCore = (() => {
     if (!saveLoginInfoEnabled()) return null;
     const changes = {lastAuthorizedAt: Date.now()};
     if (typeof identity?.nickname === 'string' && identity.nickname.trim()) changes.nickname = identity.nickname;
+    if (typeof identity?.providerKey === 'string' && identity.providerKey) changes.providerKey = identity.providerKey;
     return accounts.update(id, changes, false, CHANNEL.id);
   }
   function profileZone(profile) {
@@ -3558,6 +3561,41 @@ const ChannelCore = (() => {
     }
     return ('00000000' + (hash >>> 0).toString(16)).slice(-8);
   }
+  function stableDirectProfileKey(text) {
+    const value = String(text || '');
+    return stableDirectKey(value) + stableDirectKey('subaccount\u0000' + value);
+  }
+  function directProfileBinding(event, account, expectedId = '') {
+    const identityAccount = typeof event?.identityAccount === 'string'
+      ? event.identityAccount.trim().slice(0, 256) : '';
+    const subaccountId = typeof event?.subaccountId === 'string'
+      ? event.subaccountId.trim().slice(0, 4096) : '';
+    const key = /^[A-Za-z0-9._:-]{1,200}$/.test(account) ? account : 'account-' + stableDirectKey(account);
+    const legacyId = CHANNEL.id + ':' + key;
+    const identityId = /^[A-Za-z0-9._:-]{1,256}$/.test(identityAccount) ? identityAccount : legacyId;
+    const providerKey = subaccountId ? stableDirectProfileKey(CHANNEL.id + '\u0000' + subaccountId) : '';
+    const derivedId = providerKey ? CHANNEL.id + ':sub:' + providerKey : identityId;
+    if (!providerKey) {
+      return {id: derivedId, providerKey: '', conflict: !!expectedId && !sameAccountIdentity(expectedId, derivedId)};
+    }
+    const expected = expectedId ? profileById(expectedId, CHANNEL.id) : null;
+    const known = (accounts?.profiles(false) || []).find(profile => profile.providerKey === providerKey) || null;
+    if (expected?.providerKey && expected.providerKey !== providerKey) {
+      return {id: derivedId, providerKey, conflict: true};
+    }
+    if (expectedId) {
+      if (known && known.id !== expectedId) return {id: known.id, providerKey, conflict: true};
+      if (expected?.providerKey === providerKey) return {id: expectedId, providerKey, conflict: false};
+      if (expected && !expected.providerKey &&
+        (expectedId === legacyId || (expected.loginAccount && expected.loginAccount === account))) {
+        return {id: expectedId, providerKey, conflict: false};
+      }
+      if (expectedId === derivedId) return {id: expectedId, providerKey, conflict: false};
+      return {id: derivedId, providerKey, conflict: true};
+    }
+    if (known) return {id: known.id, providerKey, conflict: false};
+    return {id: derivedId, providerKey, conflict: false};
+  }
   function installDirectHook() {
     try {
       unsafeWindow.__SGS_DIRECT_EVENT__ = event => {
@@ -3579,17 +3617,18 @@ const ChannelCore = (() => {
           if (!active?.direct) return '';
           const account = typeof event.account === 'string' ? event.account.trim().slice(0, 200) : '';
           if (!account) return '';
-          const identityAccount = typeof event.identityAccount === 'string' ? event.identityAccount.trim().slice(0, 256) : '';
-          const key = /^[A-Za-z0-9._:-]{1,200}$/.test(account) ? account : 'account-' + stableDirectKey(account);
-          const id = /^[A-Za-z0-9._:-]{1,256}$/.test(identityAccount) ? identityAccount : CHANNEL.id + ':' + key;
-          if (expectedProfileId && !sameAccountIdentity(expectedProfileId, id)) {
+          const binding = directProfileBinding(event, account, expectedProfileId);
+          if (binding.conflict) {
             status('授权账号与所选账号不一致，已停止接入。请先切换' + CHANNEL.name + '账号再重试。');
+            // Stop the engine before it can fall back to a stale preselected
+            // profile and persist the mismatched sibling subaccount.
+            try { directApi()?.cancel?.(eventToken, 'account_mismatch'); } catch (_) {}
             active.controller.abort();
             return '';
           }
           const nickname = typeof event.nickname === 'string' && event.nickname.trim() ? event.nickname.trim().slice(0, 120) : account;
-          const matchedId = expectedProfileId && sameAccountIdentity(expectedProfileId, id) ? expectedProfileId : id;
-          const profile = rememberIdentity({id, nickname}, matchedId);
+          const profile = rememberIdentity({id: binding.id, nickname,
+            ...(binding.providerKey ? {providerKey: binding.providerKey} : {})}, binding.id);
           if (!profile) return '';
           currentProfileId = expectedProfileId = verifiedProfileId = profile.id;
           active.profileId = profile.id;
@@ -3872,7 +3911,11 @@ const ChannelCore = (() => {
     clearTransientProfile();
     clearGameLoginSession();
     setAccountPhase('waiting');
-    try { sessionStorage.removeItem(ACCOUNT_CONTEXT); sessionStorage.removeItem(LAUNCH); } catch (_) {}
+    try {
+      sessionStorage.removeItem(ACCOUNT_CONTEXT);
+      sessionStorage.removeItem('sgs-direct-profile-v1');
+      sessionStorage.removeItem(LAUNCH);
+    } catch (_) {}
     GM_deleteValue(CHANNEL.accountPrefix + 'live:' + instanceId);
     updateAccountHeading(); renderAccounts(true);
   }
@@ -5243,7 +5286,7 @@ const ChannelCore = (() => {
 /* DIRECT-ENGINE-BEGIN */
 (() => {
   'use strict';
-  const VERSION = '1.4.3';
+  const VERSION = '1.4.4';
   const ORIGIN = 'https://web.sanguosha.com';
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
   const SESSION_KEY = 'wegame.qq.session.v1';
@@ -7199,6 +7242,11 @@ const ChannelCore = (() => {
       buttons[0]?.focus();
     });
   }
+  function selectedSubaccount(a) {
+    if (a?.provider === 'oppo') return {id: a.oppo?.ssoid || '', name: a.oppo?.accountName || ''};
+    if (a?.provider === 'vivo') return {id: a.vivo?.uid || '', name: a.vivo?.accountName || ''};
+    return {id: '', name: ''};
+  }
   function emitDirectEvent(event) {
     const token = event?.clientToken || attempt?.clientToken || boundClientToken || '';
     try { return page.__SGS_DIRECT_EVENT__({...event, clientToken: token}); } catch (_) { return ''; }
@@ -8344,7 +8392,8 @@ const ChannelCore = (() => {
       description: '同一 Vivo 账号下检测到多个可用小号。请选择本次要进入的小号，脚本不会替你猜测。',
       notice: 'Vivo 账号有多个可用小号，请在页面弹窗中选择。', accounts});
     active(a);
-    return uid;
+    const selected = accounts.find(account => account.id === uid);
+    return {uid, name: selected?.name || ''};
   }
   function vivoSavedAccountChoice(value, realName, savedUid) {
     const stage = 'vivo_account';
@@ -8358,6 +8407,7 @@ const ChannelCore = (() => {
     assert(account, 'ACCOUNT_MISMATCH', stage);
     assert(!account.frozenFlag, 'VIVO_ACCOUNT_UNAVAILABLE', stage);
     return {uid: fields(account, ['subOpenId'], stage).subOpenId,
+      name: choiceText(account.nickName, 64) || choiceText(account.subRole, 64),
       username: typeof value.data?.nickName === 'string' ? value.data.nickName.slice(0, 1024) : '',
       openId: typeof value.data?.openId === 'string' ? value.data.openId.slice(0, 1024) : ''};
   }
@@ -8385,7 +8435,7 @@ const ChannelCore = (() => {
       'VIVO_NATIVE_CONFIRMATION_REQUIRED', stage);
     assert(typeof used.data === 'string' && used.data.length > 0 && used.data.length <= 4096,
       'RESPONSE_SCHEMA_CHANGED', stage);
-    a.vivo = {...saved, uid: chosen.uid, session: used.data,
+    a.vivo = {...saved, uid: chosen.uid, session: used.data, accountName: chosen.name || saved.accountName || '',
       username: saved.username || chosen.username, openId: chosen.openId || saved.openId || ''};
     reportDiagnostic({level: 'info', stage: 'vivo_browser_refresh', mode: 'restore',
       message: '已通过 Vivo 官方浏览器登录态更新临时凭证。', uidMatched: true});
@@ -8408,14 +8458,16 @@ const ChannelCore = (() => {
         if (!a.vivoAuthorized) await authorizeVivo(a);
         const account = await accountRequest('/h5/union/get', values);
         const realName = await accountRequest('/h5/account/realName', values, false, false);
-        const uid = await vivoAccountChoice(a, account, realName);
+        const chosen = await vivoAccountChoice(a, account, realName);
+        const uid = chosen.uid;
         const used = await accountRequest('/h5/union/use', {...values, subOpenId: uid,
           ...(account.extraInfo ? {extraInfo: account.extraInfo} : {})}, true);
         assert(!used.extraData?.minor && !used.extraData?.forceNative && !used.noticeData?.content && used.vipRecall !== 1,
           'VIVO_NATIVE_CONFIRMATION_REQUIRED', 'vivo_account');
         assert(typeof used.data === 'string' && used.data.length > 0 && used.data.length <= 4096,
           'RESPONSE_SCHEMA_CHANGED', 'vivo_account');
-        a.vivo = {uid, session: used.data, username: String(account.data.nickName || ''),
+        a.vivo = {uid, session: used.data, accountName: chosen.name,
+          username: String(account.data.nickName || ''),
           openId: String(account.data.openId || '')};
         a.cookies.clear(); delete a.vivoConfirmed; delete a.vivoAuthorized; delete a.vivoIdentity;
       }
@@ -8454,7 +8506,10 @@ const ChannelCore = (() => {
       const grant = validateGrant(r.data);
       assert(!a.account || a.account === grant.account, 'ACCOUNT_MISMATCH', 'sgs_grant');
       a.account = grant.account; a.grant = grant; a.grantExpires = Date.now() + 90000;
-      remember(a);
+      // A fresh OPPO/Vivo authorization may select a sibling subaccount. Do not
+      // store it under a preselected profile until the host verifies the ready
+      // event's ssoid/subOpenId. A restore already carries the exact subaccount.
+      if (a.restored) remember(a);
     }
     return a.grant;
   }
@@ -9607,7 +9662,10 @@ const ChannelCore = (() => {
       const grant = await exchangeOppoGrant(a);
       assert(!a.account || a.account === grant.account, 'ACCOUNT_MISMATCH', 'sgs_grant');
       a.account = grant.account; a.grant = grant; a.grantExpires = Date.now() + 90000;
-      remember(a);
+      // Defer persistence on a fresh authorization until the host confirms the
+      // selected subaccount. This prevents a mismatched account from overwriting
+      // the preselected profile before the ready-event conflict check.
+      if (a.restored) remember(a);
     }
     return a.grant;
   }
@@ -9659,7 +9717,10 @@ const ChannelCore = (() => {
     const sgsGames = games.filter(game => game && game.pkgName === 'com.sgs10th.nearme.gamecenter');
     assert(sgsGames.length > 0, 'OPPO_GAME_PACKAGE_MISMATCH', stage);
     const parent = fields(value.userDto, ['userId'], stage).userId;
-    const owned = sgsGames.filter(game => game.userId === parent);
+    // The SDK has shipped userId as both a JSON number and a string. Compare
+    // normalized identifiers so a valid role is never hidden by a type-only
+    // mismatch between userDto and gameAccounts.
+    const owned = sgsGames.filter(game => String(game.userId ?? '') === parent);
     assert(owned.length > 0, 'OPPO_GAME_ACCOUNT_OWNER_MISMATCH', stage);
     // Only accounts owned by the signed-in OPPO user and free of an explicit
     // server-side confirmation gate are offered. Never default to a shared or
@@ -10241,14 +10302,22 @@ const ChannelCore = (() => {
     a.stage = 'ready'; ui.output.textContent = '扫码成功';
     let returnedProfileId = '';
     try {
+      const subaccount = selectedSubaccount(a);
       returnedProfileId = emitDirectEvent({
         type: 'ready', provider: a.provider, account: a.account || '',
         identityAccount: a.provider === 'xiaomi' ? (a.xiaomi?.uid || '') : '',
-        nickname: a.provider === 'xiaomi' ? (a.xiaomi?.username || '') : '', clientToken: a.clientToken
+        subaccountId: subaccount.id,
+        nickname: a.provider === 'xiaomi' ? (a.xiaomi?.username || '') : subaccount.name,
+        clientToken: a.clientToken
       }) || '';
     } catch (_) {}
+    // A fresh flow must bind only the profile id explicitly accepted by the
+    // host. Falling back to a preselected profile here would let a sibling
+    // subaccount overwrite it when the host rejects the ready event. Restores
+    // already carry the exact saved profile and may safely reuse it.
+    const fallbackProfileId = a.restored ? (a.__sgsProfileId || a.profileId || '') : '';
     const profileId = SESSION_PROFILE_PATTERN.test(returnedProfileId) ? returnedProfileId :
-      (SESSION_PROFILE_PATTERN.test(a.__sgsProfileId || a.profileId || '') ? (a.__sgsProfileId || a.profileId) : '');
+      (SESSION_PROFILE_PATTERN.test(fallbackProfileId) ? fallbackProfileId : '');
     if (profileId) bindProfile(profileId, a.clientToken, a.saveSession !== false);
   }
   // Presentation from https://login.dobest.cn/sdo/Logout/appLogout.php,

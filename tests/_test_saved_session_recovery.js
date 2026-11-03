@@ -48,6 +48,8 @@ function createContext(extra = {}) {
     Date, Number, String, Object, Array, Promise, JSON, Set, Map,
     assert: (ok, code, stage) => { if (!ok) throw failure(code, stage); },
     failure, fields, success,
+    choiceText: (value, limit = 80) => String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+      .replace(/\s+/g, ' ').trim().slice(0, limit),
     validateGrant: data => ({account: data.account, token: data.token,
       sign: data.sign, timestamp: data.timestamp, channelId: data.channel_id}),
     queryURL: (base, params) => base + '?' + new URLSearchParams(params).toString(),
@@ -114,8 +116,8 @@ function vivoHarness(options = {}) {
       if (path === '/h5/union/get') {
         if (options.getCode) return {code: options.getCode, authPending: options.getCode === 30101};
         return {code: 0, data: {openId: 'PARENT-OPENID', nickName: 'vivo-nick',
-          subAccounts: [{subOpenId: 'OTHER-SUB', lastLogin: true, frozenFlag: false},
-            {subOpenId: 'SAVED-SUB', lastLogin: false, frozenFlag: false}]},
+          subAccounts: [{subOpenId: 'OTHER-SUB', nickName: '其他小号', lastLogin: true, frozenFlag: false},
+            {subOpenId: 'SAVED-SUB', nickName: '已保存小号', lastLogin: false, frozenFlag: false}]},
           extraData: {minor: false, forceNative: false}, extraInfo: 'extra-info'};
       }
       if (path === '/h5/account/realName') return {code: 0, data: {accountRealName: true}};
@@ -161,6 +163,7 @@ async function main() {
     assert.strictEqual(harness.calls[4].session, 'FRESH-OPEN-TOKEN');
     assert.strictEqual(harness.attempt.vivo.uid, 'SAVED-SUB');
     assert.strictEqual(harness.attempt.vivo.session, 'FRESH-OPEN-TOKEN');
+    assert.strictEqual(harness.attempt.vivo.accountName, '已保存小号');
     assert.strictEqual(harness.attempt.vivo.openId, 'PARENT-OPENID');
     assert.strictEqual(harness.remembered.length, 1);
   }

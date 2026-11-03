@@ -115,6 +115,14 @@ async function main() {
   }
 
   {
+    const {api} = load([...CHOICE_HELPERS, 'oppoGameAccountChoices']);
+    const value = oppoValue([oppoAccount('NUMERIC-ACCOUNT', {userId: 123456789})]);
+    value.userDto.userId = 123456789;
+    const choice = api.oppoGameAccountChoices(value);
+    assert.strictEqual(choice.accounts.length, 1, 'numeric OPPO owner ids must compare by value');
+  }
+
+  {
     const {api, context} = load([...CHOICE_HELPERS, 'oppoGameAccountChoices', 'oppoGameCredentials']);
     let spec = null;
     context.chooseAccount = async (_attempt, value) => { spec = value; return value.accounts[1].id; };
@@ -125,6 +133,49 @@ async function main() {
     assert.strictEqual(credentials.token, 'OPPO-TICKET');
     assert.strictEqual(credentials.accountName, '角色 SECOND');
     assert.strictEqual(spec.accounts.length, 2);
+  }
+
+  {
+    const calls = [];
+    let selected = 'SECOND';
+    const {api, context} = load([...CHOICE_HELPERS, 'oppoGameAccountChoices', 'oppoGameCredentials',
+      'exchangeOppoGameAccount', 'exchangeOppoGrant']);
+    context.console = console;
+    context.CONFIG = {TD_SDK_APP_ID: 'TD-SDK'};
+    context.oppoSDKHeaders = () => ({});
+    context.transport = async () => ({responseText: JSON.stringify(oppoValue([
+      oppoAccount('FIRST'), oppoAccount('SECOND')
+    ]))});
+    context.chooseAccount = async () => selected;
+    context.json = async (_attempt, stage, _url, payload) => {
+      calls.push({stage, payload});
+      if (stage === 'sgs_session') return {code: 0, data: {session: 'SGS-SESSION'}};
+      if (stage === 'sgs_grant') return {code: 0, data: {
+        account: 'SGS-' + selected, token: 'GAME-TOKEN', sign: 'GAME-SIGN', timestamp: 1
+      }};
+      throw failure('UNEXPECTED_STAGE', stage);
+    };
+    context.queryURL = (base, params) => base + '?' + Object.entries(params)
+      .map(([key, value]) => encodeURIComponent(key) + '=' + encodeURIComponent(value)).join('&');
+    context.validateGrant = value => value;
+    vm.runInContext('Object.assign(this,{transport,json,queryURL,validateGrant,chooseAccount,' +
+      'oppoSDKHeaders,CONFIG});', context);
+
+    for (const ssoid of ['SECOND', 'FIRST']) {
+      selected = ssoid;
+      const attempt = {provider: 'oppo', stage: 'setup', device: 'oppo-device',
+        oppoAccount: {accountToken: 'OPPO-ACCOUNT-TOKEN'}};
+      attempt.oppo = await api.exchangeOppoGameAccount(attempt);
+      const grant = await api.exchangeOppoGrant(attempt);
+      const sessionCall = calls.filter(call => call.stage === 'sgs_session').at(-1);
+      assert.strictEqual(sessionCall.payload.data.uid, ssoid,
+        'selected OPPO ssoid must be the AnySDK uid');
+      assert.strictEqual(sessionCall.payload.data.session, 'OPPO-TICKET');
+      assert.strictEqual(attempt.oppo.ssoid, ssoid);
+      assert.strictEqual(attempt.oppo.credentialType, 'game-ticket');
+      assert.strictEqual(grant.account, 'SGS-' + ssoid,
+        'different selected roles must reach different final game accounts');
+    }
   }
 
   for (const [name, value, code] of [
@@ -199,12 +250,24 @@ async function main() {
     assert.strictEqual(used.values.subOpenId, 'SUB-TWO');
     assert.strictEqual(attempt.vivo.uid, 'SUB-TWO');
     assert.strictEqual(attempt.vivo.session, 'NEW-OPEN-TOKEN');
-    assert.strictEqual(calls.at(-1).path, 'remember');
+    assert.strictEqual(attempt.vivo.accountName, '小号');
+    assert.strictEqual(calls.some(call => call.path === 'remember'), false,
+      'fresh Vivo grant must wait for the host to bind the selected subaccount profile');
+  }
+
+  {
+    const {api} = load(['selectedSubaccount']);
+    const oppo = api.selectedSubaccount({provider: 'oppo', oppo: {ssoid: 'OPPO-SUB', accountName: 'OPPO 小号'}});
+    const vivo = api.selectedSubaccount({provider: 'vivo', vivo: {uid: 'VIVO-SUB', accountName: 'Vivo 小号'}});
+    assert.strictEqual(oppo.id, 'OPPO-SUB');
+    assert.strictEqual(oppo.name, 'OPPO 小号');
+    assert.strictEqual(vivo.id, 'VIVO-SUB');
+    assert.strictEqual(vivo.name, 'Vivo 小号');
   }
 
   assert(!/\.innerHTML\b/.test(source.slice(source.indexOf('function chooseAccount'), source.indexOf('function emitDirectEvent'))),
     'account selector must use textContent, not innerHTML');
-  console.log(JSON.stringify({ok: true, checks: 17}, null, 2));
+  console.log(JSON.stringify({ok: true, checks: 31}, null, 2));
 }
 
 main().catch(error => {
