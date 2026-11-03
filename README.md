@@ -2,7 +2,7 @@
 
 在三国杀网页版登录页提供一个统一的多渠道登录面板，把当前浏览器会话接到渠道官方的扫码、网页授权和游卡兑换链路，并在本机提供账号管理与快速直登。
 
-当前版本：`1.4.2`
+当前版本：`1.4.3`
 支持渠道：小米、Vivo、OPPO、华为、荣耀、哔哩哔哩、WeGame、应用宝、Steam（共 9 个）<br>
 运行方式：Tampermonkey 用户脚本（Chrome / Edge / QQ 浏览器极速模式）
 
@@ -18,6 +18,28 @@
 - AI 协作：本项目在设计、实现、测试与文档整理过程中由 `deepseek-v4.1-flash` 模型协作完成；模型参与不构成 DeepSeek 官方发布或背书。
 - 完整贡献者与协作说明：[CONTRIBUTORS.md](CONTRIBUTORS.md)；GitHub 自动统计页：[Contributors](https://github.com/softbad123/sanguosha-channel-login/graphs/contributors)。
 - 维护者：softbad123。修改说明、第三方来源与许可证状态见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 1.4.3 更新
+
+`1.4.3` 修复渠道账号下存在多个游戏角色或小号时无法继续登录的问题。OPPO 与 Vivo 现在会列出官方响应中可用的账号，只有用户明确选择后才继续兑换；小米官方网页登录同时明确支持小米页面上已绑定的 QQ、微信等第三方授权。
+
+详细发布说明与测试记录见 [`docs/RELEASE-v1.4.3.md`](docs/RELEASE-v1.4.3.md)。
+
+### 多账号与小号
+
+- OPPO 不再要求 `gameAccounts` 只能有一项。脚本只保留当前 OPPO 账号本人、同一三国杀包且没有共享或额外安全确认标记的角色，并在多个可用角色时显示选择弹窗。
+- Vivo 不再要求只有一个 `lastLogin` 子账号。脚本会列出全部未冻结小号，并把用户明确选中的 `subOpenId` 交给官方 `/h5/union/use`；保存账号直登仍要求恢复同一个 UID，不会自动切换。
+- 选择器使用隔离 Shadow DOM 和 `textContent` 渲染，账号 ID 仅显示掩码后缀；支持键盘导航、`Esc`、遮罩和取消按钮，取消不会留下半完成登录。
+- 小米官方网页登录复用参考实现相同的 `oauth2/authorize` 入口与参数，支持小米官方页面提供的 QQ、微信等已绑定第三方授权；该问题是授权入口对齐，不是多账号列表问题。
+
+### 搜索范围与结论
+
+- 公开 issue 与线上页面核对确认：OPPO issue #1 直接复现了多角色失败；Vivo 官方前端明确提供“小号功能介绍”、`subAccounts`、`subOpenId`、`frozenFlag` 与 `lastLogin`。
+- 未找到华为、荣耀、小米、哔哩哔哩、Steam、WeGame 或应用宝存在相同多账号响应结构的公开证据，因此没有按猜测修改这些渠道。
+
+### 验证
+
+- `npm test` 的 36 项回归测试全部通过；账号选择测试覆盖 OPPO/Vivo 单账号、多账号、安全标记过滤、掩码、选择后票据绑定和取消清理。
 
 ## 1.4.2 更新
 
@@ -201,9 +223,9 @@
 
 | 渠道 | 平台号 | 游戏渠道号 | 登录方式 | 说明 |
 | --- | ---: | ---: | --- | --- |
-| 小米 | 10038 | 320052 | 面板扫码；官方网页登录 | 官方 OAuth 与网页版游戏交接 |
-| Vivo | 10031 | 320056 | 面板扫码；官方网页登录 | 官方 passport 与 joint 桥接 |
-| OPPO | 10030 | 320123 | HeyTap 官方扫码 / 手机号等网页方式 | 官方 code 一次性回传 |
+| 小米 | 10038 | 320052 | 面板扫码；官方网页登录 | 官方 OAuth（含 QQ、微信第三方授权）与网页版游戏交接 |
+| Vivo | 10031 | 320056 | 面板扫码；官方网页登录 | 官方 passport 与 joint 桥接；可选择多个未冻结小号 |
+| OPPO | 10030 | 320123 | HeyTap 官方扫码 / 手机号等网页方式 | 官方 code 一次性回传；可选择多个本人三国杀角色 |
 | 华为 | 332 | 320459 | 面板扫码 | 二维码、账号授权与游卡兑换 |
 | 荣耀 | 50027 | 320463 | 面板扫码 | 荣耀账号二维码、游戏中心实名校验与游卡兑换 |
 | 哔哩哔哩 | 50003 | 120133 | 面板扫码 | access_key 与游戏回调交接 |
@@ -222,7 +244,7 @@
 3. 下载固定更新地址中的 [`sanguosha-channel-login.user.js`](https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js)，在 Tampermonkey 中导入并启用。Release 中可能同时提供带版本号的副本，内容相同。
 4. 停用或删除旧的“小米服登录器”“统一登录器”以及旧版“三国杀多渠道登录”脚本，避免同页重复注入。
 5. 打开 <https://web.sanguosha.com/login/10th_client/index.html>。
-6. 页面右侧出现登录面板后，确认页脚显示 `v1.4.2 · 9 个渠道`。
+6. 页面右侧出现登录面板后，确认页脚显示 `v1.4.3 · 9 个渠道`。
 
 ### 方式二：从源码安装
 
@@ -311,7 +333,7 @@ QQ 浏览器授权没有返回应用宝校验所需的 `pay_token`。脚本会�
 
 **登录后进入加载页，又返回主登录页**
 
-`1.1.3` 已修复 WeGame 的 `PlatformID` 凭证误判；`1.1.4` 又修复了 QQ 浏览器丢失 `window.name` 后交接无法恢复，以及回退到经典 OL 登录页的问题。若仍复现，请先确认版本为 `1.4.2`、Tampermonkey 为 `5.5.1+`、没有同时启用旧版登录脚本，再从“运行记录”复制或导出反馈日志；日志中会显示失败所在的流程、阶段、错误码、源码行列号和 `cause` 链，便于直接定位。QQ 浏览器慢网下请给官方请求和游戏加载最多 4 分钟，不要连续重复点击登录。
+`1.1.3` 已修复 WeGame 的 `PlatformID` 凭证误判；`1.1.4` 又修复了 QQ 浏览器丢失 `window.name` 后交接无法恢复，以及回退到经典 OL 登录页的问题。若仍复现，请先确认版本为 `1.4.3`、Tampermonkey 为 `5.5.1+`、没有同时启用旧版登录脚本，再从“运行记录”复制或导出反馈日志；日志中会显示失败所在的流程、阶段、错误码、源码行列号和 `cause` 链，便于直接定位。QQ 浏览器慢网下请给官方请求和游戏加载最多 4 分钟，不要连续重复点击登录。
 
 **慢网络下如何理解超时**
 
@@ -334,6 +356,7 @@ QQ 浏览器授权没有返回应用宝校验所需的 `pay_token`。脚本会�
 - `tests/_test_official_autocollapse.js` 校验主登录页不因官服选择器自动折叠、自动展开开关的持久化与状态恢复、点击“进入游戏”会折叠、手动展开不屏蔽下一次登录，以及游戏页保持成功登录后的折叠状态。
 - `tests/_test_login_success_prompt.js` 校验游戏页成功提示居中显示、游戏路由与实际渠道校准、路由和运行时冲突时中性降级、同一登录只提示一次、提示期间面板延迟隐藏、提示自动关闭，以及登录页不提前提示。
 - `tests/_test_account_display.js` 校验游戏内 ID、备注、上次登录格式及整行选中高亮结构。
+- `tests/_test_account_choice.js` 校验 OPPO / Vivo 多角色选择、安全标记过滤、账号 ID 掩码、选中票据绑定与取消清理。
 - `tests/_test_game_identity_probe.js` 校验主世界探针注入位置、`scriptContent` / 脚本 `text` 入口、协议回调、身份缓存合并与重复事件抑制。
 - `tests/_test_game_identity_apply.js` 校验游戏内 ID 写入账号记录、状态切换、自动折叠和同一身份去重。
 - `tests/_test_account_open_window.js` 校验账号管理在 `waiting / loading / failed / disconnected` 下重试本地直登，以及 `connected` 窗口不重复启动登录。

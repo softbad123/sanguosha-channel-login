@@ -7,7 +7,7 @@
 // @supportURL   https://github.com/softbad123/sanguosha-channel-login/issues
 // @updateURL    https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
 // @downloadURL  https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
-// @version      1.4.2
+// @version      1.4.3
 // @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和账号管理直达。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
 // @match        https://web.sanguosha.com/*
 // @match        https://joint.vivo.com.cn/game-subaccount-login/*
@@ -538,7 +538,7 @@ const ChannelRegistry = (() => {
     storagePrefix: 'sgs-xiaomi-v1:', accountPrefix: 'sgs-xiaomi-accounts-v1:',
     contextPrefix: 'sgs-xiaomi', windowPrefix: 'sgs-xiaomi',
     loginEndpoint: 'https://10th-sdk-login.sanguosha.com/xiaomi2/app/login',
-    reason: '已验证浏览器链路：小米官方 OAuth → 小米 SDK 会话 → 游卡渠道兑换 → 官网启动参数；服务器仍会校验全部票据。',
+    reason: '已验证浏览器链路：小米官方 OAuth（可使用 QQ、微信等已绑定的第三方授权）→ 小米 SDK 会话 → 游卡渠道兑换 → 官网启动参数；服务器仍会校验全部票据。',
     protocol: 'yoka-xiaomi-v1',
     callback: {protocols: ['http:', 'https:'], hostname: 'game.xiaomi.com', pathname: '/oauthcallback/mioauth'},
     endpoints: {
@@ -548,7 +548,7 @@ const ChannelRegistry = (() => {
       launch: 'https://10th-sdk-login.sanguosha.com/xiaomi2/app/login'
     },
     oauth: {
-      authorize: 'https://account.xiaomi.com/oauth2/authorize', loginEntry: 'https://account.xiaomi.com/pass/serviceLogin',
+      authorize: 'https://account.xiaomi.com/oauth2/authorize',
       switchAccount: 'https://account.xiaomi.com/', sid: 'passport', clientId: '2882303761517516898',
       scope: '1 3', redirectUri: 'http://game.xiaomi.com/oauthcallback/mioauth',
       params: {skip_confirm: 'false'}
@@ -560,7 +560,7 @@ const ChannelRegistry = (() => {
       {id: 'xiaomi-qr', label: '小米扫码登录', kind: 'direct',
         hint: '在屏幕中央弹窗显示小米官方二维码'},
       {id: 'xiaomi-official', label: '小米官方网页登录', kind: 'oauth', method: 1,
-        hint: '官方页支持账号密码和短信'}
+        hint: '含 QQ、微信等第三方授权'}
     ],
     requestPolicy: [
       {origin: 'https://account.migc.g.mi.com', paths: ['/misdk/v2/oauth', '/migc-sdk-account/getLoginAppAccount_v2']},
@@ -1873,7 +1873,7 @@ const ChannelCore = (() => {
   const LEGACY_TRANSIENT_PROFILE_KEY = CHANNEL.contextPrefix + '-transient-profile-v1';
   const LOGIN_PAGE = 'https://web.sanguosha.com/login/10th_client/index.html';
   const PENDING_ACCOUNT_KEY = 'sgs-unified-pending-account-v1';
-  const VERSION = '1.4.2';
+  const VERSION = '1.4.3';
   const NETWORK_TIMEOUT = 60000;
   const GAME_ROUTE_PATTERN = /^\/(?:x|10|10th|login)\/pc\//;
   const OFFICIAL_LOGIN_ROUTE_PATTERN = /^\/login\/(?:(?:10th_client|x)(?:\/index(?:\.html)?)?|index(?:\.html)?)\/?$/;
@@ -3685,7 +3685,11 @@ const ChannelCore = (() => {
         if (event.type === 'cancel') {
           if (['superseded', 'cleanup'].includes(event.reason)) return '';
           if (active?.direct && (!active.clientToken || eventToken === active.clientToken)) {
-            status('已取消' + CHANNEL.name + '扫码登录。');
+            // The engine owns explicit cancels from its account chooser or QR
+            // surface. Abort the host wrapper too, otherwise the resolved
+            // engine promise could be mistaken for a completed login.
+            try { active.controller.abort(); } catch (_) {}
+            closeLoginPopup(active);
           }
           return '';
         }
@@ -4271,7 +4275,13 @@ const ChannelCore = (() => {
     if (/ACCOUNT_MISMATCH/.test(code)) return '扫码账号与当前账号不一致，已停止接入';
     if (/CAPTCHA/.test(code)) return '渠道要求人工验证，请在官方验证窗口中完成后再试';
     if (/VIVO_BROWSER_TIMEOUT/.test(code)) return '等待' + CHANNEL.name + '官方登录超时，请重新打开登录窗口';
-    if (/VIVO_ACCOUNT_SELECTION_REQUIRED/.test(code)) return CHANNEL.name + '账号有多个子账号，无法自动判断；请先在官方页面明确选择后重试';
+    if (/VIVO_ACCOUNT_SELECTION_REQUIRED/.test(code)) return CHANNEL.name + '账号下没有可用小号，请先在官方页面创建或恢复小号';
+    if (/VIVO_ACCOUNT_UNAVAILABLE/.test(code)) return CHANNEL.name + '小号因冻结等原因不可用，请先在官方页面处理';
+    if (/OPPO_GAME_ACCOUNT_SELECTION_REQUIRED/.test(code)) return 'OPPO 角色选择未完成，请重新登录';
+    if (/OPPO_GAME_PACKAGE_MISMATCH/.test(code)) return 'OPPO 账号下未找到三国杀一将成名角色';
+    if (/OPPO_GAME_ACCOUNT_OWNER_MISMATCH/.test(code)) return 'OPPO 返回的角色不属于当前账号，已阻止登录';
+    if (/OPPO_GAME_ACCOUNT_CONFIRMATION_REQUIRED/.test(code)) return 'OPPO 角色需要额外安全确认，请先在官方客户端处理';
+    if (/ACCOUNT_CHOICE_(?:EMPTY|INVALID)/.test(code)) return '渠道返回的账号列表异常，已阻止自动选择；请重新登录';
     if (/VIVO_REAL_NAME_REQUIRED/.test(code)) return CHANNEL.name + '账号未完成实名认证或当前状态不允许登录';
     if (/NATIVE_CONFIRMATION_REQUIRED/.test(code)) return CHANNEL.name + '要求原生客户端或未成年人确认，浏览器无法继续';
     if (/REJECTED/.test(code)) return CHANNEL.name + '官方接口拒绝了本次登录，请重试或改用官方账号页';
@@ -5233,7 +5243,7 @@ const ChannelCore = (() => {
 /* DIRECT-ENGINE-BEGIN */
 (() => {
   'use strict';
-  const VERSION = '1.4.2';
+  const VERSION = '1.4.3';
   const ORIGIN = 'https://web.sanguosha.com';
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
   const SESSION_KEY = 'wegame.qq.session.v1';
@@ -7045,6 +7055,150 @@ const ChannelCore = (() => {
     assert(/^[a-f0-9]{16,64}$/.test(token), 'CLIENT_TOKEN_INVALID', 'setup');
     return token;
   }
+  let accountChoice = null;
+  function choiceText(value, limit = 80) {
+    return String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+      .replace(/\s+/g, ' ').trim().slice(0, limit);
+  }
+  function choiceIdSuffix(value) {
+    const safe = String(value ?? '').replace(/[^A-Za-z0-9_.~+\/=-]/g, '');
+    return safe.length > 4 ? 'ID ••••' + safe.slice(-4) : '';
+  }
+  function choiceTime(value) {
+    const text = choiceText(value, 40);
+    if (text) return text;
+    const raw = Number(value);
+    if (!Number.isFinite(raw) || raw <= 0) return '';
+    const date = new Date(raw < 1e12 ? raw * 1000 : raw);
+    return Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', {hour12: false}) : '';
+  }
+  function accountChoiceCancelled() {
+    return Object.assign(new Error('LOGIN_CANCELLED'), {code: 'LOGIN_CANCELLED', stage: 'account_choice'});
+  }
+  function dismissAccountChoice() {
+    const current = accountChoice;
+    if (!current) return false;
+    accountChoice = null;
+    current.cleanup();
+    current.reject(accountChoiceCancelled());
+    return true;
+  }
+  function chooseAccount(a, spec) {
+    active(a);
+    const accounts = Array.isArray(spec?.accounts) ? spec.accounts : [];
+    assert(accounts.length > 0, 'ACCOUNT_CHOICE_EMPTY', 'account_choice');
+    if (accounts.length === 1) return Promise.resolve(accounts[0].id);
+    dismissAccountChoice();
+    return new Promise((resolve, reject) => {
+      const host = document.createElement('div');
+      host.id = 'jnd-account-choice';
+      const root = host.attachShadow({mode: 'closed'});
+      const style = document.createElement('style');
+      style.textContent = ':host{all:initial}.backdrop{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:24px;background:#11182799;font:14px/1.5 system-ui,-apple-system,"Microsoft YaHei",sans-serif;color:#172033}.panel{display:flex;flex-direction:column;width:min(440px,100%);max-height:min(76vh,620px);background:#f8f5ec;border:1px solid #bda874;border-radius:16px;box-shadow:0 24px 70px #0006;overflow:hidden}.head{padding:20px 20px 12px}.head h2{margin:0;font-size:18px;line-height:1.35;color:#2d2518}.head p{margin:8px 0 0;font-size:13px;color:#655b49}.list{display:grid;gap:8px;padding:4px 14px 14px;overflow:auto}.option{display:block;width:100%;padding:12px 14px;border:1px solid #d8cba9;border-radius:10px;background:#fffdf8;color:inherit;text-align:left;font:inherit;cursor:pointer}.option:hover{border-color:#a98e4f;background:#fff9e9}.option[aria-pressed="true"]{border-color:#8d6b24;background:#f4e5bd;box-shadow:0 0 0 2px #a98e4f44}.option:focus-visible,.actions button:focus-visible{outline:3px solid #5b7cfa99;outline-offset:2px}.row{display:flex;align-items:center;gap:8px}.name{flex:1;min-width:0;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.last{flex:none;padding:2px 7px;border-radius:999px;background:#e8dfc8;color:#685428;font-size:11px}.meta{display:block;margin-top:4px;color:#756b59;font-size:12px;overflow-wrap:anywhere}.actions{display:flex;justify-content:flex-end;gap:8px;padding:12px 14px 14px;border-top:1px solid #e3d8bd;background:#f3eddf}.actions button{padding:9px 16px;border:1px solid #b6a67e;border-radius:9px;background:#fff;color:#322a1c;font:inherit;cursor:pointer}.actions .primary{border-color:#8d6b24;background:#8d6b24;color:#fff}.actions button:disabled{opacity:.45;cursor:default}';
+      const backdrop = document.createElement('div'); backdrop.className = 'backdrop';
+      const panel = document.createElement('section'); panel.className = 'panel';
+      panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true');
+      panel.setAttribute('aria-labelledby', 'jnd-account-choice-title');
+      panel.setAttribute('aria-describedby', 'jnd-account-choice-desc');
+      const head = document.createElement('header'); head.className = 'head';
+      const title = document.createElement('h2'); title.id = 'jnd-account-choice-title';
+      title.textContent = choiceText(spec.title, 48) || '选择登录账号';
+      const description = document.createElement('p'); description.id = 'jnd-account-choice-desc';
+      description.textContent = choiceText(spec.description, 180) || '请选择本次要登录的账号。';
+      head.append(title, description);
+      const list = document.createElement('div'); list.className = 'list'; list.setAttribute('role', 'group');
+      list.setAttribute('aria-label', title.textContent);
+      const buttons = [];
+      let selectedId = '', settled = false;
+      const options = accounts.map(account => ({id: String(account.id || ''),
+        name: choiceText(account.name, 64) || '未命名账号', meta: choiceText(account.meta, 120),
+        lastLogin: choiceText(account.lastLogin, 32)}));
+      assert(options.every(option => option.id && option.id.length <= 4096),
+        'ACCOUNT_CHOICE_INVALID', 'account_choice');
+      assert(new Set(options.map(option => option.id)).size === options.length,
+        'ACCOUNT_CHOICE_INVALID', 'account_choice');
+      const markSelected = index => {
+        selectedId = options[index].id;
+        buttons.forEach((button, current) => button.setAttribute('aria-pressed', String(current === index)));
+        continueButton.disabled = false;
+      };
+      for (const [index, option] of options.entries()) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'option';
+        button.setAttribute('aria-pressed', 'false');
+        const row = document.createElement('span'); row.className = 'row';
+        const name = document.createElement('span'); name.className = 'name'; name.textContent = option.name;
+        row.append(name);
+        if (option.lastLogin) {
+          const last = document.createElement('span'); last.className = 'last'; last.textContent = option.lastLogin;
+          row.append(last);
+        }
+        button.append(row);
+        if (option.meta) {
+          const meta = document.createElement('span'); meta.className = 'meta'; meta.textContent = option.meta;
+          button.append(meta);
+        }
+        button.addEventListener('click', () => markSelected(index));
+        buttons.push(button); list.append(button);
+      }
+      const actions = document.createElement('footer'); actions.className = 'actions';
+      const cancel = document.createElement('button'); cancel.type = 'button'; cancel.textContent = '取消';
+      const continueButton = document.createElement('button'); continueButton.type = 'button';
+      continueButton.className = 'primary'; continueButton.textContent = '使用所选账号';
+      continueButton.disabled = true;
+      actions.append(cancel, continueButton); panel.append(head, list, actions);
+      backdrop.append(panel); root.append(style, backdrop);
+      const previousFocus = document.activeElement;
+      const cleanup = () => {
+        window.removeEventListener('keydown', onKeydown, true);
+        host.remove();
+        try { previousFocus?.focus?.({preventScroll: true}); } catch (_) {}
+      };
+      const finish = id => {
+        if (settled) return;
+        settled = true;
+        if (accountChoice?.attempt === a) accountChoice = null;
+        cleanup();
+        setBrowserNotice(a, '已选择账号，正在继续登录…');
+        a.stage = 'account_choice_selected';
+        resolve(id);
+      };
+      const cancelChoice = () => {
+        if (settled) return;
+        if (attempt === a) cancelFlow(a.clientToken || '', 'user');
+        else dismissAccountChoice();
+      };
+      const onKeydown = event => {
+        if (event.key === 'Escape') { event.preventDefault(); cancelChoice(); return; }
+        const activeElement = root.activeElement;
+        if (event.key === 'Tab') {
+          const focusable = [...buttons, continueButton, cancel].filter(node => !node.disabled);
+          const index = focusable.indexOf(activeElement);
+          if (index < 0) { event.preventDefault(); focusable[event.shiftKey ? focusable.length - 1 : 0]?.focus(); }
+          else if (event.shiftKey && index === 0) { event.preventDefault(); focusable.at(-1)?.focus(); }
+          else if (!event.shiftKey && index === focusable.length - 1) { event.preventDefault(); focusable[0]?.focus(); }
+          return;
+        }
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+        const index = buttons.indexOf(activeElement);
+        if (index < 0 && activeElement !== continueButton && activeElement !== cancel) return;
+        event.preventDefault();
+        const target = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 :
+          (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+        buttons[target]?.focus();
+      };
+      continueButton.addEventListener('click', () => { if (selectedId) finish(selectedId); });
+      cancel.addEventListener('click', cancelChoice);
+      backdrop.addEventListener('click', event => { if (event.target === backdrop) cancelChoice(); });
+      accountChoice = {attempt: a, cleanup, reject};
+      window.addEventListener('keydown', onKeydown, true);
+      (document.body || document.documentElement).append(host);
+      a.stage = 'account_choice';
+      setBrowserNotice(a, choiceText(spec.notice, 180) || '检测到多个账号，请选择本次要登录的账号。');
+      reportDiagnostic({level: 'info', stage: 'account_choice',
+        message: '检测到多个可用账号，等待用户明确选择。', count: options.length});
+      buttons[0]?.focus();
+    });
+  }
   function emitDirectEvent(event) {
     const token = event?.clientToken || attempt?.clientToken || boundClientToken || '';
     try { return page.__SGS_DIRECT_EVENT__({...event, clientToken: token}); } catch (_) { return ''; }
@@ -8165,15 +8319,32 @@ const ChannelCore = (() => {
   async function vivoBrowser(a, path, values, post = false, encrypted = true) {
     return success(await vivoBrowserValue(a, path, values, post, encrypted), 'vivo_account');
   }
-  function vivoAccountChoice(value, realName) {
+  function vivoAccountChoices(value, realName) {
     const stage = 'vivo_account';
     assert(realName.data?.accountRealName === true, 'VIVO_REAL_NAME_REQUIRED', stage);
     assert(!value.extraData?.minor && !value.extraData?.forceNative, 'VIVO_NATIVE_CONFIRMATION_REQUIRED', stage);
     const accounts = value.data?.subAccounts;
-    assert(Array.isArray(accounts) && accounts.length === 1 && accounts[0].lastLogin === true,
-      'VIVO_ACCOUNT_SELECTION_REQUIRED', stage);
-    assert(!accounts[0].frozenFlag, 'VIVO_ACCOUNT_UNAVAILABLE', stage);
-    return fields(accounts[0], ['subOpenId'], stage).subOpenId;
+    assert(Array.isArray(accounts) && accounts.length > 0, 'VIVO_ACCOUNT_SELECTION_REQUIRED', stage);
+    const usable = accounts.filter(account => account && !account.frozenFlag);
+    assert(usable.length > 0, 'VIVO_ACCOUNT_UNAVAILABLE', stage);
+    return usable.map(account => {
+      const id = fields(account, ['subOpenId'], stage).subOpenId;
+      const role = choiceText(account.subRole, 64);
+      const level = choiceText(account.subLevel, 24);
+      const lastLogin = choiceTime(account.lastLoginAtString || account.lastLoginAt) ||
+        (account.lastLogin === true ? '最近登录' : '');
+      return {id, name: choiceText(account.nickName, 64) || role || 'Vivo 小号',
+        meta: [role && role !== choiceText(account.nickName, 64) ? role : '', level,
+          choiceIdSuffix(id)].filter(Boolean).join(' · '), lastLogin};
+    });
+  }
+  async function vivoAccountChoice(a, value, realName) {
+    const accounts = vivoAccountChoices(value, realName);
+    const uid = await chooseAccount(a, {title: '选择 Vivo 小号',
+      description: '同一 Vivo 账号下检测到多个可用小号。请选择本次要进入的小号，脚本不会替你猜测。',
+      notice: 'Vivo 账号有多个可用小号，请在页面弹窗中选择。', accounts});
+    active(a);
+    return uid;
   }
   function vivoSavedAccountChoice(value, realName, savedUid) {
     const stage = 'vivo_account';
@@ -8237,7 +8408,7 @@ const ChannelCore = (() => {
         if (!a.vivoAuthorized) await authorizeVivo(a);
         const account = await accountRequest('/h5/union/get', values);
         const realName = await accountRequest('/h5/account/realName', values, false, false);
-        const uid = vivoAccountChoice(account, realName);
+        const uid = await vivoAccountChoice(a, account, realName);
         const used = await accountRequest('/h5/union/use', {...values, subOpenId: uid,
           ...(account.extraInfo ? {extraInfo: account.extraInfo} : {})}, true);
         assert(!used.extraData?.minor && !used.extraData?.forceNative && !used.noticeData?.content && used.vipRecall !== 1,
@@ -9481,26 +9652,45 @@ const ChannelCore = (() => {
       (String(value.code).replace(/[^A-Za-z0-9_-]/g, '').toUpperCase().slice(0, 40) || 'UNKNOWN'), 'oppo_token');
     return {accountToken: token};
   }
-  function oppoGameCredentials(value) {
+  function oppoGameAccountChoices(value) {
     const stage = 'oppo_game_account';
     assert(value && String(value.code) === '200', 'OPPO_GAME_ACCOUNT_REJECTED', stage);
-    assert(Array.isArray(value.gameAccounts) && value.gameAccounts.length === 1,
-      'OPPO_GAME_ACCOUNT_SELECTION_REQUIRED', stage);
-    const game = value.gameAccounts[0];
-    assert(game && game.pkgName === 'com.sgs10th.nearme.gamecenter', 'OPPO_GAME_PACKAGE_MISMATCH', stage);
+    const games = Array.isArray(value.gameAccounts) ? value.gameAccounts : [];
+    const sgsGames = games.filter(game => game && game.pkgName === 'com.sgs10th.nearme.gamecenter');
+    assert(sgsGames.length > 0, 'OPPO_GAME_PACKAGE_MISMATCH', stage);
     const parent = fields(value.userDto, ['userId'], stage).userId;
-    assert(game.userId === parent, 'OPPO_GAME_ACCOUNT_OWNER_MISMATCH', stage);
-    // Only the single, owned account path is supported. Preserve explicit
-    // server confirmation requirements; do not select a shared account.
-    assert(game.accountSharingTag === 0 && !game.accountSharingId && !value.accountSharingId &&
-      game.needFaceScan === false && game.needLoginPop === false &&
-      !game.accountIsProtected && !game.tradeLimit,
-      'OPPO_GAME_ACCOUNT_CONFIRMATION_REQUIRED', stage);
-    const ssoid = fields(game, ['id'], stage).id;
+    const owned = sgsGames.filter(game => game.userId === parent);
+    assert(owned.length > 0, 'OPPO_GAME_ACCOUNT_OWNER_MISMATCH', stage);
+    // Only accounts owned by the signed-in OPPO user and free of an explicit
+    // server-side confirmation gate are offered. Never default to a shared or
+    // protected account merely because it is the first response entry.
+    const usable = owned.filter(game => game.accountSharingTag === 0 && !game.accountSharingId &&
+      !value.accountSharingId && game.needFaceScan === false && game.needLoginPop === false &&
+      !game.accountIsProtected && !game.tradeLimit);
+    assert(usable.length > 0, 'OPPO_GAME_ACCOUNT_CONFIRMATION_REQUIRED', stage);
     const token = fields(value, ['ticket'], stage).ticket;
-    assert(ssoid.length <= 4096 && token.length <= 4096, 'OPPO_GAME_ACCOUNT_SCHEMA_CHANGED', stage);
-    return {credentialType: 'game-ticket', token, ssoid,
-      accountName: typeof game.accountName === 'string' ? game.accountName.slice(0, 128) : ''};
+    assert(token.length <= 4096, 'OPPO_GAME_ACCOUNT_SCHEMA_CHANGED', stage);
+    const accounts = usable.map(game => {
+      const ssoid = fields(game, ['id'], stage).id;
+      assert(ssoid.length <= 4096, 'OPPO_GAME_ACCOUNT_SCHEMA_CHANGED', stage);
+      const name = choiceText(game.accountName, 64) || choiceText(game.roleName, 64) || '三国杀账号';
+      const role = choiceText(game.roleName, 64);
+      const lastLogin = choiceTime(game.lastLoginAtString || game.lastLoginAt || game.lastLoginTime) ||
+        (game.lastLogin === true ? '最近登录' : '');
+      return {id: ssoid, name, lastLogin,
+        meta: [role && role !== name ? role : '', choiceIdSuffix(ssoid)].filter(Boolean).join(' · ')};
+    });
+    return {token, accounts};
+  }
+  async function oppoGameCredentials(a, value) {
+    const {token, accounts} = oppoGameAccountChoices(value);
+    const ssoid = await chooseAccount(a, {title: '选择 OPPO 三国杀角色',
+      description: '同一 OPPO 账号下检测到多个可登录的三国杀角色。请选择本次要进入的角色，脚本不会替你猜测。',
+      notice: 'OPPO 账号有多个三国杀角色，请在页面弹窗中选择。', accounts});
+    const selected = accounts.find(account => account.id === ssoid);
+    active(a);
+    assert(selected, 'OPPO_GAME_ACCOUNT_SELECTION_REQUIRED', 'oppo_game_account');
+    return {credentialType: 'game-ticket', token, ssoid: selected.id, accountName: selected.name};
   }
   async function exchangeOppoGameAccount(a) {
     a.stage = 'oppo_game_account';
@@ -9513,8 +9703,8 @@ const ChannelCore = (() => {
       limit: 262144, headers: oppoSDKHeaders(url)});
     let value;
     try { value = JSON.parse(response.responseText); } catch (_) { throw failure('INVALID_JSON', a.stage); }
-    const credentials = oppoGameCredentials(value);
-    console.info('[统一登录器]', {stage: a.stage, code: 200, accountCount: 1});
+    const credentials = await oppoGameCredentials(a, value);
+    console.info('[统一登录器]', {stage: a.stage, code: 200, accountSelected: true});
     return credentials;
   }
   async function exchangeOppoGrant(a) {
@@ -9901,6 +10091,7 @@ const ChannelCore = (() => {
     const ownedToken = a?.clientToken || '';
     if (a && expectedToken && ownedToken !== expectedToken) return false;
     attempt = null;
+    dismissAccountChoice();
     if (a) {
       for (const cancel of [...a.requests]) cancel();
       hideQR(a); a.cookies.clear();
@@ -10224,6 +10415,7 @@ const ChannelCore = (() => {
       await showMiddle(a);
     } catch (error) {
       if (activeRunGeneration !== generation) return;
+      if (error?.message === 'LOGIN_CANCELLED' && error?.stage === 'account_choice' && !attempt) return;
       const current = attempt;
       if (current?.clientToken && current.clientToken !== clientToken) return;
       invalidateOnError(current, error);
@@ -10326,8 +10518,13 @@ const ChannelCore = (() => {
         STEAM_PAGE_RESULT_INVALID: 'Steam 官方回调格式异常，请重新登录',
         STEAM_STATE_MISMATCH: 'Steam 回调状态不匹配，本次授权已拒绝',
         STEAM_PAGE_RESULT_EXPIRED: 'Steam 官方回调已过期，请重新登录',
-        VIVO_ACCOUNT_SELECTION_REQUIRED: 'Vivo 账号有多个子账号，请先在官方页面明确选择后重试',
+        VIVO_ACCOUNT_SELECTION_REQUIRED: 'Vivo 账号下没有可用小号，请先在官方页面创建或恢复小号',
+        VIVO_ACCOUNT_UNAVAILABLE: 'Vivo 小号因冻结等原因不可用，请先在官方页面处理',
         VIVO_REAL_NAME_REQUIRED: 'Vivo 账号未完成实名认证或当前状态不允许登录',
+        OPPO_GAME_ACCOUNT_SELECTION_REQUIRED: 'OPPO 角色选择未完成，请重新登录',
+        OPPO_GAME_PACKAGE_MISMATCH: 'OPPO 账号下未找到三国杀一将成名角色',
+        OPPO_GAME_ACCOUNT_OWNER_MISMATCH: 'OPPO 返回的角色不属于当前账号，已阻止登录',
+        OPPO_GAME_ACCOUNT_CONFIRMATION_REQUIRED: 'OPPO 角色需要额外安全确认，请先在官方客户端处理',
         BILI_GAME_CALLBACK_UNAVAILABLE: '已进入游戏页，但游戏没有就绪，未能交接触摸登录回调',
         BILI_CHANNEL_MISMATCH: 'B 站游戏页渠道号不匹配，请刷新后重试',
         YYB_QQ_PAY_TOKEN_MISSING: '应用宝 QQ 未返回 pay_token，浏览器授权无法完成应用宝校验',

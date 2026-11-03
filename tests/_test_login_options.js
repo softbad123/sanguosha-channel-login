@@ -35,7 +35,7 @@ for (const channel of registry.channels) {
     optionIds.add(option.id);
     if (labels.has(option.label)) fail(channel.id + ' duplicate label: ' + option.label);
     labels.add(option.label);
-    const signature = [option.kind, option.mode || '', option.page || '', option.provider || ''].join('|');
+    const signature = [option.kind, option.method || '', option.mode || '', option.page || '', option.provider || ''].join('|');
     if (signatures.has(signature)) fail(channel.id + ' duplicate target: ' + signature);
     signatures.add(signature);
     if (option.kind === 'disabled') fail(channel.id + ' exposes disabled option: ' + option.id);
@@ -47,6 +47,21 @@ for (const channel of registry.channels) {
 }
 const wxHint = registry.get('wegame')?.loginOptions.find(option => option.id === 'wegame-wx')?.hint;
 if (wxHint !== '显示微信官方二维码') fail('wechat login hint must be exactly 显示微信官方二维码');
+const xiaomi = registry.get('xiaomi');
+const xiaomiOfficial = xiaomi?.loginOptions.find(option => option.id === 'xiaomi-official');
+if (!xiaomi || xiaomi.oauth?.authorize !== 'https://account.xiaomi.com/oauth2/authorize' ||
+  xiaomi.oauth?.loginEntry) {
+  fail('xiaomi must use only the pinned official OAuth authorization entry');
+}
+if (!xiaomiOfficial || xiaomiOfficial.kind !== 'oauth' || xiaomiOfficial.method !== 1 ||
+  !/QQ|微信/.test(xiaomiOfficial.hint || '')) {
+  fail('xiaomi official option must advertise QQ/WeChat authorization through method 1');
+}
+if (xiaomi?.oauth?.clientId !== '2882303761517516898' || xiaomi?.oauth?.redirectUri !==
+  'http://game.xiaomi.com/oauthcallback/mioauth' || xiaomi?.oauth?.scope !== '1 3' ||
+  xiaomi?.oauth?.params?.skip_confirm !== 'false') {
+  fail('xiaomi OAuth parameters changed');
+}
 for (const channelId of ['huawei', 'honor', 'bilibili']) {
   const channel = registry.get(channelId);
   if (!channel) fail(channelId + ' channel is missing');
