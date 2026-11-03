@@ -7,7 +7,7 @@
 // @supportURL   https://github.com/softbad123/sanguosha-channel-login/issues
 // @updateURL    https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
 // @downloadURL  https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
-// @version      1.4.1
+// @version      1.4.2
 // @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和账号管理直达。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
 // @match        https://web.sanguosha.com/*
 // @match        https://joint.vivo.com.cn/game-subaccount-login/*
@@ -1873,10 +1873,10 @@ const ChannelCore = (() => {
   const LEGACY_TRANSIENT_PROFILE_KEY = CHANNEL.contextPrefix + '-transient-profile-v1';
   const LOGIN_PAGE = 'https://web.sanguosha.com/login/10th_client/index.html';
   const PENDING_ACCOUNT_KEY = 'sgs-unified-pending-account-v1';
-  const VERSION = '1.4.1';
+  const VERSION = '1.4.2';
   const NETWORK_TIMEOUT = 60000;
   const GAME_ROUTE_PATTERN = /^\/(?:x|10|10th|login)\/pc\//;
-  const OFFICIAL_LOGIN_ROUTE_PATTERN = /^\/login\/(?:10th_client|x)(?:\/index(?:\.html)?)?\/?$/;
+  const OFFICIAL_LOGIN_ROUTE_PATTERN = /^\/login\/(?:(?:10th_client|x)(?:\/index(?:\.html)?)?|index(?:\.html)?)\/?$/;
   const COLLAPSED_PANEL_WIDTH = 208;
   const EXPANDED_PANEL_WIDTH = 360;
   const EXPANDED_PANEL_HEIGHT = 500;
@@ -1897,6 +1897,14 @@ const ChannelCore = (() => {
   const PANEL_COLLAPSED_KEY = 'sgs-panel-collapsed-v1';
   const PANEL_HIDDEN_KEY = 'sgs-panel-hidden-v1';
   const LOGIN_PAGE_AUTO_EXPAND_KEY = 'sgs-login-page-auto-expand-v1';
+  const LOGIN_SUCCESS_PROMPT_KEY = 'sgs-login-success-prompt-v1';
+  const LOGIN_SUCCESS_PROMPT_MS = 4200;
+  const PANEL_AUTO_HIDE_DELAY_MS = 700;
+  const OFFICIAL_GAME_CHANNEL_IDS = Object.freeze(['210100', '110101']);
+  const GAME_CHANNEL_ID_ALIASES = Object.freeze({
+    yyb: Object.freeze(['1036']),
+    wegame: Object.freeze(['321023'])
+  });
   const isBrowserChannel = ChannelRegistry.isBrowser(CHANNEL);
   const hasDirectLogin = CHANNEL.loginOptions.some(option => option.kind === 'direct');
   const hasBrowserLogin = CHANNEL.loginOptions.some(option => option.kind === 'direct' && option.mode === 'browser');
@@ -2196,6 +2204,9 @@ const ChannelCore = (() => {
   let panelContent, loginOptionsNode, panelCollapseButton;
   let qrModal, qrModalImage, qrModalCaption, qrModalTitle, qrModalClose, qrModalReturnFocus = null;
   let aboutModal, aboutClose, aboutBody, aboutReturnFocus = null;
+  let loginSuccessPrompt = null, loginSuccessPromptTimer = 0, panelAutoHideTimer = 0;
+  let loginSuccessCopy = null, gameChannelLookup = null;
+  let loginSuccessPromptShown = false;
   let gameLoginWatchTimer = 0, gameLoginWatchDeadline = 0, gameLoginAutoCollapsed = false;
   const loginOptionButtons = [];
   let channelSelect, channelBadge, addAccountButton, switchAccountButton;
@@ -2481,6 +2492,9 @@ const ChannelCore = (() => {
   }
   function autoCollapseForLogin(reason, stage, meta = {}, force = false) {
     if (stage === 'official_login' || stage === 'game_login') markGameLoginSession();
+    if (stage === 'game_login' && isGamePage()) {
+      notifyGameEntrySuccess(reason, stage, meta);
+    }
     if (gameLoginAutoCollapsed && !force) return false;
     try {
       const wasCollapsed = !panelContent || panelContent.hidden;
@@ -2705,6 +2719,261 @@ const ChannelCore = (() => {
     aboutModal.hidden = false;
     try { aboutClose?.focus({preventScroll: true}); } catch (_) {}
   }
+  function loginSuccessPromptMarked() {
+    try { return sessionStorage.getItem(LOGIN_SUCCESS_PROMPT_KEY) === '1'; } catch (_) { return false; }
+  }
+  function normalizedGameChannelId(value) {
+    if (typeof value !== 'string' && typeof value !== 'number') return '';
+    const text = String(value).trim();
+    if (!/^\d{1,16}$/.test(text) || Number(text) <= 0) return '';
+    return String(Number(text));
+  }
+  function currentGameChannelIds() {
+    const ids = [], seen = new Set();
+    const add = value => {
+      const id = normalizedGameChannelId(value);
+      if (!id || seen.has(id)) return;
+      seen.add(id); ids.push(id);
+    };
+    let page = null;
+    try { page = typeof unsafeWindow === 'undefined' ? null : unsafeWindow; } catch (_) {}
+    for (const read of [
+      () => page?.AccountInfo?.BaseChannel,
+      () => page?.AccountInfo?.Self?.BaseChannel,
+      () => page?.AccountInfo?.Self?.Basechannel,
+      () => page?.UserData?.Self?.BaseChannel,
+      () => page?.ReqObj?.channel_id,
+      () => page?.channel_id
+    ]) {
+      try { add(read()); } catch (_) {}
+    }
+    return ids;
+  }
+  function routeGameChannelIds() {
+    const ids = [], seen = new Set();
+    try {
+      for (const value of new URLSearchParams(location.search || '').getAll('channel_id')) {
+        const id = normalizedGameChannelId(value);
+        if (!id || seen.has(id)) continue;
+        seen.add(id); ids.push(id);
+      }
+    } catch (_) {}
+    return ids;
+  }
+  function knownGameChannels() {
+    if (gameChannelLookup) return gameChannelLookup;
+    const lookup = new Map(), ambiguous = new Set();
+    const add = (value, channel) => {
+      const id = normalizedGameChannelId(value);
+      if (!id) return;
+      const previous = lookup.get(id);
+      if (previous && previous.id !== channel.id) ambiguous.add(id);
+      else lookup.set(id, channel);
+    };
+    for (const channel of ChannelRegistry.channels) {
+      const values = [channel.gameChannelId, channel.bridge?.channelId,
+        ...(channel.bridge?.acceptChannelIds || []), ...(GAME_CHANNEL_ID_ALIASES[channel.id] || [])];
+      try {
+        values.push(...new URL(channel.launchPage).searchParams.getAll('channel_id'));
+      } catch (_) {}
+      for (const value of values) add(value, channel);
+    }
+    for (const id of ambiguous) lookup.delete(id);
+    gameChannelLookup = lookup;
+    return lookup;
+  }
+  function officialGameChannelIds() {
+    const ids = new Set(OFFICIAL_GAME_CHANNEL_IDS);
+    const officialNames = new Set([
+      'CHATOL', 'CHATOLWD', 'CHATOLAndroid', 'CHATOLIOS',
+      'CHATOLAndroidReplicate1', 'CHATOLAndroidReplicate2', 'CHATOLWDReplicate1'
+    ]);
+    try {
+      const types = unsafeWindow?.ChannelTyp;
+      if (types && typeof types === 'object') {
+        for (const name of officialNames) {
+          const id = normalizedGameChannelId(types[name]);
+          if (id) ids.add(id);
+        }
+      }
+    } catch (_) {}
+    return ids;
+  }
+  function detectGameLoginChannel() {
+    const official = officialGameChannelIds();
+    const routeIds = routeGameChannelIds();
+    if (routeIds.length) {
+      if (routeIds.length !== 1) return null;
+      const routeId = routeIds[0];
+      if (official.has(routeId)) {
+        return {kind: 'official', id: 'official', gameChannelId: routeId, shortName: '官服'};
+      }
+      const routeChannel = knownGameChannels().get(routeId);
+      return routeChannel ? {kind: 'channel', id: routeChannel.id, gameChannelId: routeId,
+        shortName: routeChannel.shortName} : null;
+    }
+    const ids = currentGameChannelIds();
+    if (!ids.length) return null;
+    for (const id of ids) {
+      if (official.has(id)) return {kind: 'official', id: 'official', gameChannelId: id, shortName: '官服'};
+    }
+    const channels = knownGameChannels(), matches = new Map();
+    for (const id of ids) {
+      const channel = channels.get(id);
+      if (!channel) return null;
+      if (!matches.has(channel.id)) matches.set(channel.id, {channel, gameChannelId: id});
+    }
+    if (matches.size !== 1) return null;
+    const match = matches.values().next().value;
+    return {kind: 'channel', id: match.channel.id, gameChannelId: match.gameChannelId,
+      shortName: match.channel.shortName};
+  }
+  function loginSuccessChannelCopy() {
+    const detected = detectGameLoginChannel();
+    return detected ? '已使用' + detected.shortName + '账号进入游戏。' : '已使用账号进入游戏。';
+  }
+  function ensureLoginSuccessPrompt() {
+    if (loginSuccessPrompt?.isConnected) return loginSuccessPrompt;
+    if (!document || typeof document.createElement !== 'function') return null;
+    const host = document.createElement('div');
+    host.id = 'sgs-login-success-prompt';
+    host.hidden = true;
+    host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;' +
+      'padding:20px;pointer-events:none;';
+    const root = typeof host.attachShadow === 'function' ? host.attachShadow({mode: 'closed'}) : null;
+    if (!root) return null;
+    const style = document.createElement('style');
+    style.textContent = `
+      :host{
+        all:initial;color-scheme:light dark;
+        --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+        --surface:rgba(28,28,30,.96);--text:#f5f5f7;--muted:#c7c7cc;
+        --border:rgba(255,255,255,.16);--success:#30d158;--button:rgba(255,255,255,.14);
+        --button-hover:rgba(255,255,255,.22);--focus:rgba(10,132,255,.55);
+      }
+      @media (prefers-color-scheme:light){:host{
+        --surface:rgba(250,250,252,.97);--text:#1d1d1f;--muted:#5f5f64;
+        --border:rgba(60,60,67,.16);--success:#248a3d;--button:rgba(118,118,128,.14);
+        --button-hover:rgba(118,118,128,.22);
+      }}
+      :host([hidden]){display:none!important}*{box-sizing:border-box}
+      .success-dialog{
+        pointer-events:auto;width:min(318px,calc(100vw - 40px));padding:23px 22px 18px;
+        color:var(--text);font:13px/1.55 var(--font);text-align:center;
+        background:var(--surface);border:1px solid var(--border);border-radius:24px;
+        box-shadow:0 26px 80px rgba(0,0,0,.36),0 2px 10px rgba(0,0,0,.16);
+        -webkit-backdrop-filter:blur(28px) saturate(180%);backdrop-filter:blur(28px) saturate(180%);
+        animation:sgs-login-success-in 220ms cubic-bezier(.2,.8,.2,1);
+      }
+      .success-icon{
+        display:grid;place-items:center;width:52px;height:52px;margin:0 auto 13px;
+        border:1px solid rgba(48,209,88,.36);border-radius:50%;background:rgba(48,209,88,.14);
+        color:var(--success);font-size:27px;font-weight:750;line-height:1;
+        box-shadow:0 0 0 7px rgba(48,209,88,.055);
+      }
+      h2{margin:0;font-size:18px;line-height:1.35;font-weight:700;letter-spacing:-.02em}
+      p{margin:7px 0 0;font-size:12px;line-height:1.65;color:var(--muted)}
+      small{display:block;margin-top:5px;font-size:10px;line-height:1.6;color:var(--muted);opacity:.82}
+      button{
+        width:100%;min-height:38px;margin-top:16px;padding:8px 14px;font:inherit;font-size:12px;
+        font-weight:650;color:var(--text);cursor:pointer;background:var(--button);
+        border:1px solid var(--border);border-radius:12px;transition:background-color 140ms ease,transform 100ms ease;
+      }
+      button:hover{background:var(--button-hover)}button:active{transform:scale(.98)}
+      button:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+      @keyframes sgs-login-success-in{from{opacity:0;transform:translateY(8px) scale(.97)}to{opacity:1;transform:none}}
+      @media (prefers-reduced-motion:reduce){.success-dialog{animation:none!important}button{transition:none!important}}
+    `;
+    const dialog = document.createElement('section');
+    dialog.className = 'success-dialog';
+    dialog.setAttribute('role', 'status');
+    dialog.setAttribute('aria-live', 'assertive');
+    dialog.setAttribute('aria-atomic', 'true');
+    const icon = document.createElement('div');
+    icon.className = 'success-icon';
+    icon.textContent = '✓';
+    icon.setAttribute('aria-hidden', 'true');
+    const title = document.createElement('h2');
+    title.textContent = '登录成功';
+    const copy = document.createElement('p');
+    copy.textContent = '已使用账号进入游戏。';
+    loginSuccessCopy = copy;
+    const note = document.createElement('small');
+    note.textContent = '登录面板已自动隐藏，可从油猴菜单重新显示。';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '知道了';
+    close.onclick = hideLoginSuccessPrompt;
+    dialog.addEventListener('click', event => event.stopPropagation());
+    dialog.addEventListener('pointerdown', event => event.stopPropagation());
+    dialog.append(icon, title, copy, note, close);
+    root.append(style, dialog);
+    (document.body || document.documentElement).appendChild(host);
+    loginSuccessPrompt = host;
+    return host;
+  }
+  function hideLoginSuccessPrompt() {
+    clearTimeout(loginSuccessPromptTimer);
+    loginSuccessPromptTimer = 0;
+    if (!loginSuccessPrompt) return false;
+    loginSuccessPrompt.hidden = true;
+    return true;
+  }
+  function showLoginSuccessPrompt() {
+    const prompt = ensureLoginSuccessPrompt();
+    if (!prompt) return false;
+    if (loginSuccessCopy) loginSuccessCopy.textContent = loginSuccessChannelCopy();
+    prompt.hidden = false;
+    clearTimeout(loginSuccessPromptTimer);
+    loginSuccessPromptTimer = setTimeout(hideLoginSuccessPrompt, LOGIN_SUCCESS_PROMPT_MS);
+    return true;
+  }
+  function schedulePanelAutoHide() {
+    if (!panelHost || panelHost.hidden) return false;
+    clearTimeout(panelAutoHideTimer);
+    // Persist the hidden state immediately so a quick game-page reload cannot
+    // resurrect the panel before the short visual delay finishes.
+    savePreferences({hidden: true});
+    try { sessionStorage.setItem(PANEL_HIDDEN_KEY, '1'); } catch (_) {}
+    panelAutoHideTimer = setTimeout(() => {
+      panelAutoHideTimer = 0;
+      if (!panelHost || panelHost.hidden) return;
+      setPanelVisible(false);
+    }, PANEL_AUTO_HIDE_DELAY_MS);
+    return true;
+  }
+  function clearLoginSuccessPromptState() {
+    loginSuccessPromptShown = false;
+    clearTimeout(loginSuccessPromptTimer);
+    loginSuccessPromptTimer = 0;
+    clearTimeout(panelAutoHideTimer);
+    panelAutoHideTimer = 0;
+    if (loginSuccessPrompt) loginSuccessPrompt.hidden = true;
+    try { sessionStorage.removeItem(LOGIN_SUCCESS_PROMPT_KEY); } catch (_) {}
+  }
+  function notifyGameEntrySuccess(reason, stage, meta = {}) {
+    if (!isGamePage() || loginSuccessPromptShown || loginSuccessPromptMarked()) return false;
+    const detected = detectGameLoginChannel();
+    const channelMeta = detected ? {
+      channelId: detected.kind === 'official' ? 'official' : detected.id,
+      channelName: detected.shortName
+    } : {};
+    let shown = false;
+    try {
+      shown = showLoginSuccessPrompt();
+      if (shown) {
+        loginSuccessPromptShown = true;
+        try { sessionStorage.setItem(LOGIN_SUCCESS_PROMPT_KEY, '1'); } catch (_) {}
+        feedbackLog.add('success', reason || '账号已成功登录并进入游戏。',
+          diagnosticMeta({...meta, ...channelMeta, flow: 'game_login_success', stage}));
+      }
+    } catch (error) {
+      reportFeedbackError(error, {...meta, flow: 'game_login_success', stage,
+        message: '登录成功提示显示失败'});
+    }
+    schedulePanelAutoHide();
+    return shown;
+  }
   function panelWasHidden() {
     try { return sessionStorage.getItem(PANEL_HIDDEN_KEY) === '1'; } catch (_) { return false; }
   }
@@ -2737,6 +3006,7 @@ const ChannelCore = (() => {
   }
   function clearGameLoginSession() {
     try { sessionStorage.removeItem(SESSION_LOGIN_KEY); } catch (_) {}
+    clearLoginSuccessPromptState();
     gameLoginAutoCollapsed = false;
   }
   function gameLoginSessionMarked() {
@@ -2748,10 +3018,13 @@ const ChannelCore = (() => {
     // keep the panel collapsed; the main login page is handled separately.
     gameLoginAutoCollapsed = true;
     setLoginPanelCollapsed(true);
+    notifyGameEntrySuccess('检测到已进入游戏，账号登录成功。', 'game_login',
+      {source: 'game_page_restore'});
     return true;
   }
   function restorePanelStateForPage() {
     if (isOfficialLoginPage()) {
+      clearLoginSuccessPromptState();
       if (loginPageAutoExpandEnabled()) {
         setLoginPanelCollapsed(false);
         return false;
@@ -2765,6 +3038,35 @@ const ChannelCore = (() => {
     restoreGameLoginCollapse();
     return !!panelContent?.hidden;
   }
+  function restorePanelVisibilityForPage() {
+    if (!panelHost) return false;
+    if (isOfficialLoginPage()) {
+      // A refresh or history navigation back to any official login page must
+      // always restore an entry point, even after the success prompt hid the
+      // whole panel on the game page.
+      clearTimeout(panelAutoHideTimer);
+      panelAutoHideTimer = 0;
+      savePreferences({hidden: false});
+      setPanelVisible(true);
+      return true;
+    }
+    setPanelVisible(!panelWasHidden());
+    return !panelHost.hidden;
+  }
+  function syncPanelForPageChange() {
+    if (!panelHost) return false;
+    restorePanelStateForPage();
+    return restorePanelVisibilityForPage();
+  }
+  function installPanelPageStateWatch() {
+    if (typeof window?.addEventListener !== 'function') return;
+    // BFCache restores do not rerun the script initialization, while history
+    // back/forward can change the route without a document reload.
+    window.addEventListener('pageshow', event => {
+      if (event.persisted) syncPanelForPageChange();
+    });
+    window.addEventListener('popstate', () => syncPanelForPageChange());
+  }
   function toggleLoginPanelCollapsed() {
     if (!panelContent) return false;
     return setLoginPanelCollapsed(!panelContent.hidden);
@@ -2775,6 +3077,7 @@ const ChannelCore = (() => {
     markGameLoginSession();
     gameLoginAutoCollapsed = true;
     setLoginPanelCollapsed(true);
+    notifyGameEntrySuccess('账号认证完成，已进入游戏。', 'game_login', {source: 'login_surface'});
   }
   function positionPanel(left, top) {
     if (!panelHost) return;
@@ -2786,6 +3089,7 @@ const ChannelCore = (() => {
     panelHost.style.right = 'auto';
   }
   function showPanel(reset = false) {
+    if (panelAutoHideTimer) { clearTimeout(panelAutoHideTimer); panelAutoHideTimer = 0; }
     savePreferences(reset ? {hidden: false, left: null, top: null} : {hidden: false});
     if (!panelHost) return;
     setPanelVisible(true);
@@ -3352,6 +3656,8 @@ const ChannelCore = (() => {
           setAccountPhase('loading');
           gameLoginAutoCollapsed = true;
           setLoginPanelCollapsed(true);
+          notifyGameEntrySuccess('游戏认证成功，账号已进入游戏。', 'game_login',
+            {source: 'direct_game_auth'});
           const changes = {
             lastLoginAt: Date.now(),
             ...(typeof event.serverId === 'string' && event.serverId ? {serverId: event.serverId} : {}),
@@ -4020,6 +4326,8 @@ const ChannelCore = (() => {
       markGameLoginSession();
       gameLoginAutoCollapsed = true;
       setLoginPanelCollapsed(true);
+      notifyGameEntrySuccess('登录状态已恢复，账号已进入游戏。', 'game_login',
+        {source: 'saved_login'});
       updateAccountHeading(); renderAccounts();
       if (isGamePage()) {
         status('登录状态已恢复，正在重新进入游戏…');
@@ -4363,6 +4671,8 @@ const ChannelCore = (() => {
     function cleanupPageResources() {
       const steps = [
         () => clearInterval(accountRefresh),
+        () => { clearTimeout(loginSuccessPromptTimer); loginSuccessPromptTimer = 0; },
+        () => { clearTimeout(panelAutoHideTimer); panelAutoHideTimer = 0; },
         () => { clearTimeout(gameAccountSyncTimer); gameAccountSyncTimer = 0; },
         () => { clearTimeout(gameLoginWatchTimer); gameLoginWatchTimer = 0; },
         () => accounts.release(instanceId),
@@ -4892,12 +5202,13 @@ const ChannelCore = (() => {
     if (!callbackOnly) {
       const prefs = preferences();
       restorePanelStateForPage();
-      setPanelVisible(!panelWasHidden());
+      restorePanelVisibilityForPage();
       if (!host.hidden && Number.isFinite(prefs.left) && Number.isFinite(prefs.top)) positionPanel(prefs.left, prefs.top);
       renderAccounts(true); updateAccountHeading(); busy(false);
       setTimeout(resumePendingAutoLogin, 0);
       scheduleUpdateCheck();
       installOfficialEntryCollapseWatch();
+      installPanelPageStateWatch();
       watchGameLogin();
     }
   }
@@ -4922,7 +5233,7 @@ const ChannelCore = (() => {
 /* DIRECT-ENGINE-BEGIN */
 (() => {
   'use strict';
-  const VERSION = '1.4.1';
+  const VERSION = '1.4.2';
   const ORIGIN = 'https://web.sanguosha.com';
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
   const SESSION_KEY = 'wegame.qq.session.v1';

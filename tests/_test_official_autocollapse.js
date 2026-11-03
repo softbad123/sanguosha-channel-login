@@ -41,6 +41,9 @@ const state = {
   hasEnter: true,
   hasAccount: true,
   collapseCalls: 0,
+  visibilityCalls: 0,
+  preferences: {hidden: true, left: null, top: null},
+  windowEvents: {},
   logs: []
 };
 const sessionValues = new Map();
@@ -60,12 +63,24 @@ const sandbox = {
   getComputedStyle() { return {display: state.display, visibility: 'visible'}; },
   panelContent: {hidden: false},
   panelCollapseButton: {},
+  panelHost: {hidden: true},
   setLoginPanelCollapsed(collapsed) {
     state.collapseCalls += 1;
     sandbox.panelContent.hidden = !!collapsed;
     sessionValues.set('sgs-panel-collapsed-v1', collapsed ? '1' : '0');
     return true;
   },
+  savePreferences(changes) { Object.assign(state.preferences, changes); },
+  setPanelVisible(visible) {
+    state.visibilityCalls += 1;
+    sandbox.panelHost.hidden = !visible;
+    sessionValues.set('sgs-panel-hidden-v1', visible ? '0' : '1');
+  },
+  window: {
+    addEventListener(type, listener) { state.windowEvents[type] = listener; }
+  },
+  clearLoginSuccessPromptState() { state.promptClears = (state.promptClears || 0) + 1; },
+  notifyGameEntrySuccess() { state.gameNotices = (state.gameNotices || 0) + 1; return true; },
   feedbackLog: {add(level, message, meta) { state.logs.push({level, message, meta}); }},
   diagnosticMeta: extra => ({traceId: 'fb-autocollapse-test', ...extra}),
   reportFeedbackError(error, context) { state.logs.push({level: 'error', message: context?.message || error?.message}); },
@@ -89,14 +104,17 @@ const source = [
   'const GAME_LOGIN_WATCH_MS = 100;',
   "const SESSION_LOGIN_KEY = 'sgs-tab-login-success-v1';",
   "const PANEL_COLLAPSED_KEY = 'sgs-panel-collapsed-v1';",
+  "const PANEL_HIDDEN_KEY = 'sgs-panel-hidden-v1';",
   "const LOGIN_PAGE_AUTO_EXPAND_KEY = 'sgs-login-page-auto-expand-v1';",
   'let gameLoginAutoCollapsed = false;',
   'let gameLoginWatchTimer = 0;',
   'let gameLoginWatchDeadline = 0;',
+  'let panelAutoHideTimer = 0;',
   'let loginPageAutoExpand = true;',
   ['isGamePage', 'isOfficialLoginPage', 'officialLoginReady', 'markGameLoginSession',
     'clearGameLoginSession', 'gameLoginSessionMarked', 'savedPanelCollapsed', 'restoreGameLoginCollapse',
     'loginPageAutoExpandEnabled', 'setLoginPageAutoExpand', 'restorePanelStateForPage',
+    'panelWasHidden', 'restorePanelVisibilityForPage', 'syncPanelForPageChange', 'installPanelPageStateWatch',
     'toggleLoginPanelCollapsed', 'collapseForOfficialEntry',
     'autoCollapseForLogin', 'watchGameLogin']
     .map(name => extractFunction(main, name)).join('\n')
@@ -106,6 +124,8 @@ vm.runInContext(source, sandbox);
 assert.strictEqual(sandbox.isOfficialLoginPage(), true);
 state.pathname = '/login/x/index';
 assert.strictEqual(sandbox.isOfficialLoginPage(), true);
+state.pathname = '/login/index.html';
+assert.strictEqual(sandbox.isOfficialLoginPage(), true);
 state.pathname = '/login/10th_client/index.html';
 assert.strictEqual(sandbox.officialLoginReady(), true);
 state.display = 'none';
@@ -114,6 +134,28 @@ state.display = 'block';
 state.hasAccount = false;
 assert.strictEqual(sandbox.officialLoginReady(), false);
 state.hasAccount = true;
+
+sandbox.installPanelPageStateWatch();
+assert.strictEqual(typeof state.windowEvents.pageshow, 'function', 'BFCache restore listener was not installed');
+assert.strictEqual(typeof state.windowEvents.popstate, 'function', 'history navigation listener was not installed');
+state.pathname = '/login/index.html';
+sessionValues.set('sgs-panel-hidden-v1', '1');
+sandbox.panelHost.hidden = true;
+assert.strictEqual(sandbox.restorePanelVisibilityForPage(), true,
+  '/login/index.html kept the panel hidden after a reload');
+assert.strictEqual(sandbox.panelHost.hidden, false, 'reload did not show the login panel');
+assert.strictEqual(sessionValues.get('sgs-panel-hidden-v1'), '0', 'reload kept the hidden marker');
+assert.strictEqual(state.preferences.hidden, false, 'reload kept the hidden preference');
+state.pathname = '/login/x/index';
+sessionValues.set('sgs-panel-hidden-v1', '1');
+sandbox.panelHost.hidden = true;
+state.windowEvents.pageshow({persisted: true});
+assert.strictEqual(sandbox.panelHost.hidden, false, 'BFCache restore did not show the login panel');
+sessionValues.set('sgs-panel-hidden-v1', '1');
+sandbox.panelHost.hidden = true;
+state.windowEvents.popstate({});
+assert.strictEqual(sandbox.panelHost.hidden, false, 'history back did not show the login panel');
+state.pathname = '/login/10th_client/index.html';
 
 state.collapseCalls = 0;
 state.logs.length = 0;

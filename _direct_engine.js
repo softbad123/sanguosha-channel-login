@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const VERSION = '1.4.1';
+  const VERSION = '1.4.2';
   const ORIGIN = 'https://web.sanguosha.com';
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
   const SESSION_KEY = 'wegame.qq.session.v1';
