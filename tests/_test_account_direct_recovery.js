@@ -183,7 +183,7 @@ function makeHarness(record, options = {}) {
   };
   vm.createContext(context);
   const functionNames = [
-    'sessionText', 'copiedFields', 'sessionStoreRecord', 'migrateLegacySession',
+    'sessionText', 'xiaomiOAuthFields', 'copiedFields', 'sessionStoreRecord', 'migrateLegacySession',
     'sessionRecords', 'savedSession', 'sessionForAttempt', 'validateBiliAuth',
     'validateSteamAuth', 'invalidateOnError'
   ];

@@ -19,7 +19,7 @@ function extract(name) {
 }
 
 const storageFunctions = [
-  'sessionText', 'copiedFields', 'sessionStoreRecord', 'migrateLegacySession',
+  'sessionText', 'xiaomiOAuthFields', 'copiedFields', 'sessionStoreRecord', 'migrateLegacySession',
   'sessionRecords', 'savedSession', 'sessionForAttempt'
 ].map(extract).join('\n');
 

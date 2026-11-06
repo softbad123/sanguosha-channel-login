@@ -7,7 +7,7 @@
 // @supportURL   https://github.com/softbad123/sanguosha-channel-login/issues
 // @updateURL    https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
 // @downloadURL  https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
-// @version      1.4.6
+// @version      1.4.7
 // @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和小米 QQ / 微信授权。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
 // @match        https://web.sanguosha.com/*
 // @match        https://joint.vivo.com.cn/game-subaccount-login/*
@@ -1819,7 +1819,22 @@ const ChannelCore = (() => {
     const launch = JSON.parse(await request(channel.endpoints.launch + '?ticket=' + encodeURIComponent(value(exchange.data, 'session')) + '&is_adult=' + encodeURIComponent(channel.launch.adult), {}, signal, channel.id));
     if (value(launch, 'code') !== '0') throw new Error(channel.shortName + '启动失败，错误码 ' + safeCode(launch.code));
     requireFields(launch.data, ['account', 'token', 'sign', 'timestamp'], channel.shortName + '启动响应缺少必要字段');
-    return {channel_id: channel.bridge.channelId, account: value(launch.data, 'account'), token: value(launch.data, 'token'), sign: value(launch.data, 'sign'), timestamp: value(launch.data, 'timestamp')};
+    return {
+      channel_id: channel.bridge.channelId,
+      account: value(launch.data, 'account'),
+      token: value(launch.data, 'token'),
+      sign: value(launch.data, 'sign'),
+      timestamp: value(launch.data, 'timestamp'),
+      // The host stores only the renewable provider material in the embedded
+      // direct engine's session store. This block never reaches the game URL.
+      restore: {
+        provider: 'xiaomi',
+        xiaomiOAuth: {uuid: value(oauth, 'uuid'), st: value(oauth, 'st')},
+        xiaomi: {uid: value(game, 'appAccountId'), session: value(game, 'session'), username: value(game, 'nickName')},
+        session: value(exchange.data, 'session'),
+        account: value(launch.data, 'account')
+      }
+    };
   }
   const flows = Object.freeze({
     'yoka-xiaomi-v1': Object.freeze({connect: xiaomiConnect, installBridge: xiaomiInstallBridge, connectionState: xiaomiConnectionState})
@@ -2078,7 +2093,7 @@ const ChannelCore = (() => {
   const LEGACY_TRANSIENT_PROFILE_KEY = CHANNEL.contextPrefix + '-transient-profile-v1';
   const LOGIN_PAGE = 'https://web.sanguosha.com/login/10th_client/index.html';
   const PENDING_ACCOUNT_KEY = 'sgs-unified-pending-account-v1';
-  const VERSION = '1.4.6';
+  const VERSION = '1.4.7';
   const NETWORK_TIMEOUT = 60000;
   const GAME_ROUTE_PATTERN = /^\/(?:x|10|10th|login)\/pc\//;
   const OFFICIAL_LOGIN_ROUTE_PATTERN = /^\/login\/(?:(?:10th_client|x)(?:\/index(?:\.html)?)?|index(?:\.html)?)\/?$/;
@@ -4890,7 +4905,7 @@ const ChannelCore = (() => {
       let code = await waiting;
       if (context.popup) { try { context.popup.close(); } catch (_) {} }
       markDiagnosticStage('channel_connect');
-      const args = await ChannelCore.connect(code, status, context.controller.signal, async identity => {
+      const connected = await ChannelCore.connect(code, status, context.controller.signal, async identity => {
         const targetProfileId = expectedProfileId || (typeof retryProfileId === 'string' ? retryProfileId : null);
         if (targetProfileId && !sameAccountIdentity(identity.id, targetProfileId)) throw new Error('授权账号与所选账号不一致，已停止接入。请先点“切换' + CHANNEL.name + '账号”换号，再授权。');
         const probeId = targetProfileId && sameAccountIdentity(identity.id, targetProfileId) ? targetProfileId : identity.id;
@@ -4907,8 +4922,17 @@ const ChannelCore = (() => {
         if (!profile.transient) selectProfile(profile);
         sessionStorage.setItem(ACCOUNT_CONTEXT, profile.id); heartbeat(); updateAccountHeading(); renderAccounts();
       }, CHANNEL.id);
+      const args = {...connected};
+      const restore = args.restore;
+      delete args.restore;
       code = null;
       if (context.controller.signal.aborted) throw new Error('已取消');
+      // Keep the official web-login path on the same renewable session store as
+      // the QR engine. Without this, a saved Xiaomi account had only profile
+      // metadata and every shortcut login fell back to a fresh authorization.
+      if (restore && saveLoginInfoEnabled() && !transientProfileMatches(currentProfileId, CHANNEL.id)) {
+        try { directApi()?.rememberBrowserSession?.({...restore, profileId: currentProfileId}); } catch (_) {}
+      }
       // Save only the account identifier from the validated launch response, never its token/sign/ticket.
       if (saveLoginInfoEnabled() && !transientProfileMatches(currentProfileId, CHANNEL.id)) {
         accounts.update(currentProfileId, {loginAccount: args.account});
@@ -5502,7 +5526,7 @@ const ChannelCore = (() => {
 /* DIRECT-ENGINE-BEGIN */
 (() => {
   'use strict';
-  const VERSION = '1.4.6';
+const VERSION = '1.4.7';
   const ORIGIN = 'https://web.sanguosha.com';
   if (location.origin !== ORIGIN || window.top !== window) return;
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
@@ -6152,6 +6176,12 @@ const ChannelCore = (() => {
   function sessionStoreKey(profileId, provider) {
     return SESSION_STORE_PREFIX + encodeURIComponent(profileId || '') + ':' + encodeURIComponent(provider || '');
   }
+  function xiaomiOAuthFields(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const uuid = sessionText(value.uuid, 20);
+    const st = sessionText(value.st, 4096);
+    return /^\d{1,20}$/.test(uuid) && st && !/[&=\r\n]/.test(st) ? {uuid, st} : null;
+  }
   function sessionStoreRecord(record) {
     if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
     const provider = sessionText(record.provider, 32);
@@ -6202,7 +6232,15 @@ const ChannelCore = (() => {
       if (auth && typeof auth === 'object') result[provider] = {auth: {
         ...copiedFields(auth, ['uid', 'session', 'username', 'gameUID']), expires: Number(auth.expires) || 0
       }};
-    } else if (provider === 'xiaomi' || provider === 'vivo') {
+    } else if (provider === 'xiaomi') {
+      const auth = record[provider];
+      if (auth && typeof auth === 'object') result[provider] =
+        copiedFields(auth, ['uid', 'session', 'username', 'openId']);
+      // The OAuth service token is the only credential that can renew an
+      // expired Xiaomi game session without showing the QR page again.
+      const oauth = xiaomiOAuthFields(record.xiaomiOAuth);
+      if (oauth) result.xiaomiOAuth = oauth;
+    } else if (provider === 'vivo') {
       const auth = record[provider];
       if (auth && typeof auth === 'object') result[provider] =
         copiedFields(auth, ['uid', 'session', 'username', 'openId']);
@@ -8221,54 +8259,72 @@ const ChannelCore = (() => {
       {stage: 'xiaomi_sdk', ...(post ? {body: {p}} : {})});
     return xiaomiJSON(await xiaomiCipher(r.responseText, true), 'xiaomi_sdk');
   }
-  function xiaomiGameCredentials(value) {
-    assert(value.retCode === 200, 'XIAOMI_GAME_ACCOUNT_REJECTED', 'xiaomi_sdk');
+  function xiaomiGameCredentials(value, restored = false) {
+    if (value?.retCode !== 200) {
+      if (restored) throw failure('SAVED_SESSION_EXPIRED', 'xiaomi_game');
+      throw failure('XIAOMI_GAME_ACCOUNT_REJECTED', 'xiaomi_sdk');
+    }
     const v = fields(value, ['appAccountId', 'session'], 'xiaomi_sdk');
     assert(/^\d{1,20}$/.test(v.appAccountId) && v.session.length <= 4096,
       'XIAOMI_GAME_ACCOUNT_INVALID', 'xiaomi_sdk');
     return {uid: v.appAccountId, session: v.session,
       username: typeof value.nickName === 'string' ? value.nickName.slice(0, 128) : ''};
   }
+  async function xiaomiGameSession(a, oauth) {
+    const plain = 'fuid=' + oauth.uuid + '&devAppId=' + XIAOMI_GAME_APP + '&toke=' + oauth.st +
+      '&imei=&sdkVersion=SDK_MI_SP_3.3.0.6&channel=meng_1439_345_android&ua=Windows' +
+      '&currentChannel=meng_1439_345_android' +
+      '&imeiMd5=&firstChannel=meng_1439_345_android&oaid=&needRealNameInfo=false&needServiceToken=true&needRiskControl=true';
+    return xiaomiGameCredentials(
+      await xiaomiSDK(a, '/migc-sdk-account/getLoginAppAccount_v2', plain, true), !!a.restored);
+  }
+  async function xiaomiSgsSession(a) {
+    // Current APK manifest / PlatformSdk: app 485, package 117, platform
+    // 10038. Verified against AnySDK with the owned native session 2026-09-29.
+    const r = success(await json(a, 'sgs_session', 'https://anysdk.dobest.cn/v1/login', {
+      appid: '485', channel: '', package_id: '117', platform_id: '10038', platform_name: 'xiaomi',
+      base: {group_id: '0', device_id: a.device, version_code: '347', version_name: '1.0.347',
+        device_mobile: '', device_network: '', device_os: 'android', device_os_version: '', device_pixel: '', device_type: '1', device_version_code: ''},
+      ext: JSON.stringify({session_type: 'st_dummy'}),
+      data: {thirdparty: 'xiaomi', pid: '10038', gid: '485', uid: a.xiaomi.uid, username: a.xiaomi.username,
+        session: a.xiaomi.session, thirdAdult: '0', thirdRealNameStatus: '0', thirdAge: '0'}
+    }), 'sgs_session');
+    let data = r.data;
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data); } catch (_) { throw failure('RESPONSE_SCHEMA_CHANGED', 'sgs_session'); }
+    }
+    return fields(data, ['session'], 'sgs_session').session;
+  }
   async function exchangeXiaomi(a) {
-    if (!a.xiaomi && !a.session) {
-      if (!a.xiaomiOAuth) {
-        if (!a.xiaomiCode) {
-          if (!a.xiaomiChallenge && !a.xiaomiLocation) await prepareXiaomi(a);
-          await waitForXiaomi(a);
-        }
-        const v = success(await xiaomiSDK(a, '/misdk/v2/oauth',
-          // ViewLoginLayout.WebLoginListenerImpl sends type 4 to the SDK;
-          // 40001 is the UI message / WebView bundle type, not this API enum.
-          'accountType=4&code=' + a.xiaomiCode + '&isSaveSt=true&appid=2000202'), 'xiaomi_sdk');
-        assert(!v.needBindMid, 'XIAOMI_ACCOUNT_BINDING_REQUIRED', 'xiaomi_sdk');
-        a.xiaomiOAuth = fields(v, ['uuid', 'st'], 'xiaomi_sdk');
-        assert(/^\d{1,20}$/.test(a.xiaomiOAuth.uuid) && !/[&=\r\n]/.test(a.xiaomiOAuth.st),
-          'XIAOMI_ACCOUNT_INVALID', 'xiaomi_sdk');
-        delete a.xiaomiCode; a.cookies.clear();
+    if (!a.xiaomi && !a.session && !a.xiaomiOAuth) {
+      if (!a.xiaomiCode) {
+        if (!a.xiaomiChallenge && !a.xiaomiLocation) await prepareXiaomi(a);
+        await waitForXiaomi(a);
       }
-      const plain = 'fuid=' + a.xiaomiOAuth.uuid + '&devAppId=' + XIAOMI_GAME_APP + '&toke=' + a.xiaomiOAuth.st +
-        '&imei=&sdkVersion=SDK_MI_SP_3.3.0.6&channel=meng_1439_345_android&ua=Windows' +
-        '&currentChannel=meng_1439_345_android' +
-        '&imeiMd5=&firstChannel=meng_1439_345_android&oaid=&needRealNameInfo=false&needServiceToken=true&needRiskControl=true';
-      a.xiaomi = xiaomiGameCredentials(await xiaomiSDK(a, '/migc-sdk-account/getLoginAppAccount_v2', plain, true));
-      delete a.xiaomiOAuth;
+      const v = success(await xiaomiSDK(a, '/misdk/v2/oauth',
+        // ViewLoginLayout.WebLoginListenerImpl sends type 4 to the SDK;
+        // 40001 is the UI message / WebView bundle type, not this API enum.
+        'accountType=4&code=' + a.xiaomiCode + '&isSaveSt=true&appid=2000202'), 'xiaomi_sdk');
+      assert(!v.needBindMid, 'XIAOMI_ACCOUNT_BINDING_REQUIRED', 'xiaomi_sdk');
+      a.xiaomiOAuth = xiaomiOAuthFields(fields(v, ['uuid', 'st'], 'xiaomi_sdk'));
+      assert(a.xiaomiOAuth, 'XIAOMI_ACCOUNT_INVALID', 'xiaomi_sdk');
+      delete a.xiaomiCode; a.cookies.clear();
+    }
+    if (!a.xiaomi) {
+      const oauth = xiaomiOAuthFields(a.xiaomiOAuth);
+      if (oauth) a.xiaomi = await xiaomiGameSession(a, oauth);
     }
     if (!a.session) {
-      // Current APK manifest / PlatformSdk: app 485, package 117, platform
-      // 10038. Verified against AnySDK with the owned native session 2026-09-29.
-      const r = success(await json(a, 'sgs_session', 'https://anysdk.dobest.cn/v1/login', {
-        appid: '485', channel: '', package_id: '117', platform_id: '10038', platform_name: 'xiaomi',
-        base: {group_id: '0', device_id: a.device, version_code: '347', version_name: '1.0.347',
-          device_mobile: '', device_network: '', device_os: 'android', device_os_version: '', device_pixel: '', device_type: '1', device_version_code: ''},
-        ext: JSON.stringify({session_type: 'st_dummy'}),
-        data: {thirdparty: 'xiaomi', pid: '10038', gid: '485', uid: a.xiaomi.uid, username: a.xiaomi.username,
-          session: a.xiaomi.session, thirdAdult: '0', thirdRealNameStatus: '0', thirdAge: '0'}
-      }), 'sgs_session');
-      let data = r.data;
-      if (typeof data === 'string') {
-        try { data = JSON.parse(data); } catch (_) { throw failure('RESPONSE_SCHEMA_CHANGED', 'sgs_session'); }
+      try {
+        a.session = await xiaomiSgsSession(a);
+      } catch (error) {
+        const oauth = xiaomiOAuthFields(a.xiaomiOAuth);
+        // A rejected native session can be renewed from the stored service
+        // token. Network and schema failures keep their original diagnostic.
+        if (!oauth || !/^(?:OFFICIAL_REJECTED_|SAVED_SESSION_EXPIRED)/.test(error.message || '')) throw error;
+        a.xiaomi = await xiaomiGameSession(a, oauth);
+        a.session = await xiaomiSgsSession(a);
       }
-      a.session = fields(data, ['session'], 'sgs_session').session;
     }
     if (!a.grant) {
       // sgs_mobile_client_channel_info.LoginXiaomi2New; channel 320052 in
@@ -10120,7 +10176,7 @@ const ChannelCore = (() => {
     const record = sessionStoreRecord({v: 3, provider, profileId, id: a.savedId,
       expires: SESSION_RECORD_EXPIRES_FOREVER, created: a.created || Date.now(), updated: Date.now(), account: a.account,
       device: a.device, session: a.session, wegame: a.wegame, bili: a.bili,
-      steam: a.steam, oppo: a.oppo, xiaomi: a.xiaomi, vivo: a.vivo,
+      steam: a.steam, oppo: a.oppo, xiaomi: a.xiaomi, xiaomiOAuth: a.xiaomiOAuth, vivo: a.vivo,
       huawei: a.huawei, honor: a.honor, yyb: a.yyb});
     // Provider payloads are retained only after the protocol-specific validation
     // and only when the user opted into local session restoration.
@@ -10171,6 +10227,28 @@ const ChannelCore = (() => {
     if (current.saveSession) remember(current);
     return true;
   }
+  function rememberBrowserSessionRecord(input) {
+    if (!input || input.provider !== 'xiaomi' || input.saveSession === false) return false;
+    const profileId = sessionText(input.profileId, 256);
+    if (!SESSION_PROFILE_PATTERN.test(profileId)) return false;
+    const oauth = xiaomiOAuthFields(input.xiaomiOAuth);
+    const auth = input.xiaomi;
+    if (!oauth || !auth || typeof auth !== 'object' || Array.isArray(auth)) return false;
+    const uid = sessionText(auth.uid, 20);
+    const nativeSession = sessionText(auth.session, 4096);
+    if (!/^\d{1,20}$/.test(uid) || !nativeSession) return false;
+    const existing = savedSession('xiaomi', profileId);
+    const record = sessionStoreRecord({v: 3, provider: 'xiaomi', profileId,
+      id: existing?.id || random(), expires: SESSION_RECORD_EXPIRES_FOREVER,
+      created: existing?.created || Date.now(), updated: Date.now(),
+      account: sessionText(input.account, 256), device: existing?.device || random(),
+      session: sessionText(input.session, 32768),
+      xiaomi: {uid, session: nativeSession, username: sessionText(auth.username, 128)},
+      xiaomiOAuth: oauth});
+    if (!record || !record.xiaomi?.uid || !record.xiaomi?.session || !record.xiaomiOAuth) return false;
+    try { GM_setValue(sessionStoreKey(profileId, 'xiaomi'), record); } catch (_) { return false; }
+    return true;
+  }
   function canReplaySavedAuth(a) {
     if (!a || !a.provider) return false;
     const now = Date.now();
@@ -10184,7 +10262,10 @@ const ChannelCore = (() => {
       return !!(a.steam?.access_token && Number(a.steam.retainedUntil) > now);
     }
     if (a.provider === 'oppo') return !!(a.oppo?.token && a.oppo?.ssoid);
-    if (a.provider === 'xiaomi' || a.provider === 'vivo') {
+    if (a.provider === 'xiaomi') {
+      return !!((a.xiaomi?.uid && a.xiaomi?.session) || xiaomiOAuthFields(a.xiaomiOAuth));
+    }
+    if (a.provider === 'vivo') {
       return !!(a[a.provider]?.uid && a[a.provider]?.session);
     }
     if (a.provider === 'huawei') {
@@ -10277,7 +10358,10 @@ const ChannelCore = (() => {
         if (!saved.session && saved.wegame?.atExpires && Date.now() >= saved.wegame.atExpires && !saved.wegame.ct) {
           throw failure('SAVED_SESSION_EXPIRED', 'restore');
         }
-      } else if (saved.provider === 'xiaomi' || saved.provider === 'vivo') {
+      } else if (saved.provider === 'xiaomi') {
+        assert(saved.session || (saved.xiaomi?.uid && saved.xiaomi?.session) ||
+          xiaomiOAuthFields(saved.xiaomiOAuth), 'SAVED_SESSION_INVALID', 'restore');
+      } else if (saved.provider === 'vivo') {
         assert(saved.session || saved[saved.provider]?.session, 'SAVED_SESSION_INVALID', 'restore');
       } else {
         assert(saved.session, 'SAVED_SESSION_INVALID', 'restore');
@@ -10308,7 +10392,8 @@ const ChannelCore = (() => {
         generation, mode: 'restore', restored: true, saveSession: options.saveSession !== false,
         __sgsProfileId: profileId || saved.profileId, expires: Infinity, device: saved.device || random(),
         account: saved.account, session: saved.session, wegame: saved.wegame, bili: saved.bili,
-        steam: saved.steam, oppo: saved.oppo, xiaomi: saved.xiaomi, vivo: saved.vivo,
+        steam: saved.steam, oppo: saved.oppo, xiaomi: saved.xiaomi, xiaomiOAuth: saved.xiaomiOAuth,
+        vivo: saved.vivo,
         huawei: saved.huawei, honor: saved.honor, yyb: saved.yyb,
         stage: 'restore', cookies: new Cookies(), requests: new Set()};
       let rebuilt = false;
@@ -10872,6 +10957,11 @@ const ChannelCore = (() => {
           const bound = bindLoginProfile(profileId, clientToken, saveSession);
           notify();
           return bound;
+        },
+        rememberBrowserSession(options = {}) {
+          const saved = rememberBrowserSessionRecord(options);
+          notify();
+          return saved;
         },
         forgetSessions(profileId) {
           const removed = forgetProfileSessions(profileId);
