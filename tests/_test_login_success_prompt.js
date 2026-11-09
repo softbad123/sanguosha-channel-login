@@ -62,6 +62,7 @@ const sessionValues = new Map();
 const timers = new Map();
 let timerId = 0;
 const unsafeWindow = {
+  name: '',
   channel_id: 210100,
   ReqObj: {channel_id: 210100},
   AccountInfo: {BaseChannel: 210100, Self: {BaseChannel: 210100}},
@@ -79,6 +80,50 @@ function setRouteChannels(values = []) {
   state.search = values.length ? '?' + values.map(value =>
     'channel_id=' + encodeURIComponent(String(value))).join('&') : '';
 }
+const handoffName = seed => 'jnd-wg-qq-' + String(seed || 'a').repeat(32);
+function setXiaomiAttempt(options = {}) {
+  const name = options.name || handoffName();
+  const value = {
+    name,
+    id: options.id || 'b'.repeat(32),
+    profileId: options.profileId === undefined ? '' : String(options.profileId),
+    clientToken: options.clientToken || 'c'.repeat(32)
+  };
+  sessionValues.set('sgs-direct-login-attempt-v1', JSON.stringify({
+    v: 1,
+    provider: options.attemptProvider || 'xiaomi',
+    ...value,
+    restored: options.restored === true,
+    saveSession: options.saveSession !== false,
+    expires: options.attemptExpires === undefined ? Date.now() + 60000 : options.attemptExpires
+  }));
+  return value;
+}
+function setXiaomiHandoff(options = {}) {
+  const attempt = setXiaomiAttempt(options);
+  sessionValues.set('sgs-direct-handoff-v1', JSON.stringify({
+    ...attempt,
+    provider: options.provider || 'xiaomi',
+    expires: options.expires === undefined ? Date.now() + 60000 : options.expires
+  }));
+  unsafeWindow.name = attempt.name;
+  return attempt;
+}
+function clearHandoff(options = {}) {
+  sessionValues.delete('sgs-direct-handoff-v1');
+  if (!options.keepAttempt) sessionValues.delete('sgs-direct-login-attempt-v1');
+  unsafeWindow.name = '';
+}
+function setXiaomiBootstrap(options = {}) {
+  unsafeWindow.__SGS_XIAOMI_BOOTSTRAP__ = {
+    provider: options.provider || 'xiaomi',
+    channelId: options.channelId || '320052',
+    expires: options.expires === undefined ? Date.now() + 60000 : options.expires
+  };
+}
+function clearXiaomiBootstrap() {
+  delete unsafeWindow.__SGS_XIAOMI_BOOTSTRAP__;
+}
 const sandbox = {
   location: {get pathname() { return state.pathname; }, get search() { return state.search; }},
   document: {body, documentElement: element('html'), createElement: element},
@@ -91,6 +136,8 @@ const sandbox = {
   URLSearchParams,
   unsafeWindow,
   ChannelRegistry: {channels: [
+    {id: 'xiaomi', shortName: '小米服', gameChannelId: 320052,
+      bridge: {channelId: 320052}, launchPage: 'https://web.sanguosha.com/x/pc/index.php'},
     {id: 'vivo', shortName: 'Vivo服', gameChannelId: 320056,
       bridge: {channelId: 320056}, launchPage: 'https://web.sanguosha.com/10/pc/index.php?channel_id=320056'},
     {id: 'yyb', shortName: '应用宝服', gameChannelId: 320460,
@@ -121,13 +168,28 @@ const source = [
   "const PANEL_HIDDEN_KEY = 'sgs-panel-hidden-v1';",
   "const OFFICIAL_GAME_CHANNEL_IDS = Object.freeze(['210100', '110101']);",
   "const GAME_CHANNEL_ID_ALIASES = Object.freeze({yyb: Object.freeze(['1036']), wegame: Object.freeze(['321023'])});",
+  "const GAME_ROUTE_DEFAULT_CHANNEL_IDS = Object.freeze({'/x/pc/index.php': Object.freeze(['320052'])});",
+  "const EMBEDDED_HANDOFF_KEY = 'sgs-direct-handoff-v1';",
+  'const EMBEDDED_HANDOFF_MAX_BYTES = 65536;',
+  "const DIRECT_LOGIN_ATTEMPT_KEY = 'sgs-direct-login-attempt-v1';",
+  "const XIAOMI_BOOTSTRAP_KEY = '__SGS_XIAOMI_BOOTSTRAP__';",
+  "const XIAOMI_CHANNEL_ID = '320052';",
+  'const XIAOMI_HANDOFF_NAME_PATTERN = /^jnd-wg-qq-[a-f0-9]{32}$/;',
+  'const XIAOMI_PROMPT_RESOLVE_MS = 15000;',
+  'const XIAOMI_PROMPT_POLL_MS = 200;',
   'let loginSuccessPrompt = null, loginSuccessPromptTimer = 0, panelAutoHideTimer = 0;',
   'let loginSuccessCopy = null, gameChannelLookup = null;',
   'let loginSuccessPromptShown = false;',
+  'let pendingGameEntryNotice = null;',
   ['isGamePage', 'loginSuccessPromptMarked', 'ensureLoginSuccessPrompt', 'hideLoginSuccessPrompt',
-    'showLoginSuccessPrompt', 'schedulePanelAutoHide', 'clearLoginSuccessPromptState',
-    'notifyGameEntrySuccess', 'normalizedGameChannelId', 'currentGameChannelIds', 'routeGameChannelIds',
-    'knownGameChannels', 'officialGameChannelIds', 'detectGameLoginChannel',
+    'showLoginSuccessPrompt', 'schedulePanelAutoHide', 'clearPendingGameEntryNotice',
+    'discardDirectLoginAttemptMarker', 'clearLoginSuccessPromptState', 'presentGameEntrySuccess',
+    'queueGameEntryNotice', 'notifyGameEntrySuccess', 'notifySavedLoginEntry',
+    'normalizedGameChannelId', 'currentGameChannelIds', 'routeGameChannelIds',
+    'knownGameChannels', 'officialGameChannelIds', 'xiaomiGameChannel', 'readEmbeddedHandoff',
+    'directLoginAttemptMarker', 'handoffWindowName', 'pendingXiaomiHandoffChannel',
+    'documentXiaomiProvenanceChannel', 'xiaomiProvenanceChannel', 'xiaomiDirectLoginAmbiguous',
+    'detectGameLoginChannel',
     'loginSuccessChannelCopy'].map(name => extractFunction(main, name)).join('\n')
 ].join('\n');
 vm.runInContext(source, sandbox);
@@ -176,6 +238,73 @@ assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用账号进入游�
 setGameChannel(null);
 assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用账号进入游戏。',
   'unknown channel state did not fall back to neutral copy');
+setGameChannel(210100);
+state.pathname = '/x/pc/index.php';
+setRouteChannels();
+const originalChannel = sandbox.CHANNEL;
+sandbox.CHANNEL = {id: 'xiaomi', shortName: '小米服'};
+assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用官服账号进入游戏。',
+  'an official login on /x/pc was mislabeled as Xiaomi even with Xiaomi as the active channel');
+unsafeWindow.ReqObj.channel_id = 320052;
+unsafeWindow.channel_id = 320052;
+assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用小米服账号进入游戏。',
+  'the injected Xiaomi channel was overridden by the official runtime placeholder');
+setGameChannel(210100);
+setRouteChannels();
+clearXiaomiBootstrap();
+clearHandoff();
+assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用官服账号进入游戏。',
+  'official login without a Xiaomi handoff was mislabeled as Xiaomi');
+setXiaomiHandoff();
+assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用小米服账号进入游戏。',
+  'the account-management Xiaomi handoff was not honored before the bootstrap ran');
+setXiaomiHandoff({provider: 'vivo'});
+assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用官服账号进入游戏。',
+  'a non-Xiaomi handoff was treated as Xiaomi provenance');
+setXiaomiHandoff({expires: Date.now() - 1});
+assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用官服账号进入游戏。',
+  'an expired Xiaomi handoff mislabeled an official login');
+clearHandoff();
+setXiaomiBootstrap();
+assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用小米服账号进入游戏。',
+  'the document Xiaomi bootstrap provenance was not honored');
+setXiaomiBootstrap({expires: Date.now() - 1});
+assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用官服账号进入游戏。',
+  'an expired Xiaomi bootstrap provenance mislabeled an official login');
+setXiaomiBootstrap();
+setGameChannel(320056);
+assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用Vivo服账号进入游戏。',
+  'Xiaomi provenance overrode a conflicting Vivo runtime channel');
+setGameChannel(210100);
+setRouteChannels([210100]);
+assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用官服账号进入游戏。',
+  'the official route lost to Xiaomi document provenance');
+setRouteChannels();
+clearXiaomiBootstrap();
+setXiaomiHandoff();
+setGameChannel(null);
+assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用小米服账号进入游戏。',
+  'a Xiaomi handoff was ignored when the game runtime was still empty');
+clearHandoff();
+setGameChannel(210100);
+const originalNotifier = sandbox.notifyGameEntrySuccess;
+let savedLoginNotifications = 0;
+sandbox.notifyGameEntrySuccess = () => { savedLoginNotifications += 1; return true; };
+assert.strictEqual(sandbox.notifySavedLoginEntry(), false,
+  'saved account login notified before the old game page navigated to the routed channel');
+assert.strictEqual(savedLoginNotifications, 0,
+  'saved account login displayed success against the stale pre-navigation channel');
+state.pathname = '/login/10th_client/index.html';
+assert.strictEqual(sandbox.notifySavedLoginEntry(), true,
+  'saved account login did not hand the notification to the next page lifecycle');
+assert.strictEqual(savedLoginNotifications, 1,
+  'saved account login was not allowed to notify outside the stale game page');
+sandbox.notifyGameEntrySuccess = originalNotifier;
+sandbox.CHANNEL = originalChannel;
+state.pathname = '/10/pc/index.php';
+setGameChannel(320052);
+assert.strictEqual(sandbox.loginSuccessChannelCopy(), '已使用小米服账号进入游戏。',
+  'the actual Xiaomi game channel was not identified');
 setGameChannel(210100);
 
 assert.strictEqual(sandbox.notifyGameEntrySuccess('测试登录成功。', 'game_login', {source: 'test'}), true,
@@ -227,6 +356,67 @@ sandbox.clearLoginSuccessPromptState();
 state.pathname = '/login/10th_client/index.html';
 assert.strictEqual(sandbox.notifyGameEntrySuccess('登录页事件。', 'game_login', {source: 'test'}), false,
   'success prompt appeared before entering the game');
+
+function runTimer(delay) {
+  const entry = [...timers.entries()].filter(([, item]) => item.delay === delay).pop();
+  assert(entry, 'expected a ' + delay + 'ms timer');
+  timers.delete(entry[0]);
+  entry[1].callback();
+}
+function successCopy() {
+  return vm.runInContext('loginSuccessCopy?.textContent || ""', sandbox);
+}
+function resetXiaomiPromptTest() {
+  sandbox.clearLoginSuccessPromptState();
+  clearXiaomiBootstrap();
+  clearHandoff();
+  state.pathname = '/x/pc/index.php';
+  setRouteChannels();
+  setGameChannel(210100);
+}
+
+resetXiaomiPromptTest();
+setXiaomiHandoff();
+assert.strictEqual(sandbox.notifyGameEntrySuccess('小米直登成功。', 'game_login',
+  {source: 'game_page_restore'}), false,
+  'the game success prompt locked the official placeholder before the Xiaomi bootstrap ran');
+assert.strictEqual(prompt.hidden, true, 'the early official prompt was shown despite Xiaomi provenance');
+assert.strictEqual(sessionValues.has('sgs-login-success-prompt-v1'), false,
+  'the early official prompt persisted its idempotency marker');
+setXiaomiBootstrap();
+clearHandoff();
+runTimer(200);
+assert.strictEqual(prompt.hidden, false, 'the deferred success prompt was not shown after Xiaomi identity arrived');
+assert.strictEqual(successCopy(), '已使用小米服账号进入游戏。',
+  'the deferred success prompt did not use the verified Xiaomi identity');
+
+resetXiaomiPromptTest();
+assert.strictEqual(sandbox.notifyGameEntrySuccess('官服登录成功。', 'game_login',
+  {source: 'game_page_restore'}), true,
+  'an official /x/pc login without Xiaomi evidence was incorrectly deferred');
+assert.strictEqual(successCopy(), '已使用官服账号进入游戏。',
+  'an official /x/pc login was mislabeled after the prompt deferral change');
+
+resetXiaomiPromptTest();
+setXiaomiHandoff();
+unsafeWindow.name = handoffName('e');
+assert.strictEqual(sandbox.notifyGameEntrySuccess('官服登录成功。', 'game_login',
+  {source: 'game_page_restore'}), true,
+  'a stale Xiaomi handoff without the matching tab name deferred an official login');
+assert.strictEqual(successCopy(), '已使用官服账号进入游戏。',
+  'a stale Xiaomi handoff contaminated an official login prompt');
+
+resetXiaomiPromptTest();
+setXiaomiAttempt();
+assert.strictEqual(sandbox.notifyGameEntrySuccess('小米直登结果未知。', 'game_login',
+  {source: 'game_page_restore'}), false,
+  'an unconsumed Xiaomi direct attempt was not deferred');
+vm.runInContext('pendingGameEntryNotice.deadline = Date.now() - 1;', sandbox);
+runTimer(200);
+assert.strictEqual(successCopy(), '已使用账号进入游戏。',
+  'an unresolved Xiaomi direct attempt fell back to the official label');
+assert.strictEqual(sessionValues.has('sgs-direct-login-attempt-v1'), false,
+  'the unresolved Xiaomi attempt marker was not cleared after the neutral prompt');
 
 console.log(JSON.stringify({ok: true, title: '登录成功', panelHidden: !state.panelVisible,
   promptDismissed: prompt.hidden, logs: state.logs.map(item => item.message)}, null, 2));

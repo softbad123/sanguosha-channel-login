@@ -7,7 +7,7 @@
 // @supportURL   https://github.com/softbad123/sanguosha-channel-login/issues
 // @updateURL    https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
 // @downloadURL  https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
-// @version      1.4.7
+// @version      1.4.8
 // @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和小米 QQ / 微信授权。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
 // @match        https://web.sanguosha.com/*
 // @match        https://joint.vivo.com.cn/game-subaccount-login/*
@@ -2093,7 +2093,7 @@ const ChannelCore = (() => {
   const LEGACY_TRANSIENT_PROFILE_KEY = CHANNEL.contextPrefix + '-transient-profile-v1';
   const LOGIN_PAGE = 'https://web.sanguosha.com/login/10th_client/index.html';
   const PENDING_ACCOUNT_KEY = 'sgs-unified-pending-account-v1';
-  const VERSION = '1.4.7';
+  const VERSION = '1.4.8';
   const NETWORK_TIMEOUT = 60000;
   const GAME_ROUTE_PATTERN = /^\/(?:x|10|10th|login)\/pc\//;
   const OFFICIAL_LOGIN_ROUTE_PATTERN = /^\/login\/(?:(?:10th_client|x)(?:\/index(?:\.html)?)?|index(?:\.html)?)\/?$/;
@@ -2118,9 +2118,20 @@ const ChannelCore = (() => {
   const PANEL_HIDDEN_KEY = 'sgs-panel-hidden-v1';
   const LOGIN_PAGE_AUTO_EXPAND_KEY = 'sgs-login-page-auto-expand-v1';
   const LOGIN_SUCCESS_PROMPT_KEY = 'sgs-login-success-prompt-v1';
+  const EMBEDDED_HANDOFF_KEY = 'sgs-direct-handoff-v1';
+  const EMBEDDED_HANDOFF_MAX_BYTES = 65536;
+  const DIRECT_LOGIN_ATTEMPT_KEY = 'sgs-direct-login-attempt-v1';
+  const XIAOMI_BOOTSTRAP_KEY = '__SGS_XIAOMI_BOOTSTRAP__';
+  const XIAOMI_CHANNEL_ID = '320052';
+  const XIAOMI_HANDOFF_NAME_PATTERN = /^jnd-wg-qq-[a-f0-9]{32}$/;
   const LOGIN_SUCCESS_PROMPT_MS = 4200;
   const PANEL_AUTO_HIDE_DELAY_MS = 700;
+  const XIAOMI_PROMPT_RESOLVE_MS = 15000;
+  const XIAOMI_PROMPT_POLL_MS = 200;
   const OFFICIAL_GAME_CHANNEL_IDS = Object.freeze(['210100', '110101']);
+  const GAME_ROUTE_DEFAULT_CHANNEL_IDS = Object.freeze({
+    '/x/pc/index.php': Object.freeze(['320052'])
+  });
   const GAME_CHANNEL_ID_ALIASES = Object.freeze({
     yyb: Object.freeze(['1036']),
     wegame: Object.freeze(['321023'])
@@ -2427,6 +2438,7 @@ const ChannelCore = (() => {
   let loginSuccessPrompt = null, loginSuccessPromptTimer = 0, panelAutoHideTimer = 0;
   let loginSuccessCopy = null, gameChannelLookup = null;
   let loginSuccessPromptShown = false;
+  let pendingGameEntryNotice = null;
   let gameLoginWatchTimer = 0, gameLoginWatchDeadline = 0, gameLoginAutoCollapsed = false;
   const loginOptionButtons = [];
   let channelSelect, channelBadge, addAccountButton, switchAccountButton;
@@ -3020,6 +3032,95 @@ const ChannelCore = (() => {
     } catch (_) {}
     return ids;
   }
+  function xiaomiGameChannel() {
+    const channel = knownGameChannels().get(XIAOMI_CHANNEL_ID);
+    return channel && channel.id === 'xiaomi'
+      ? {kind: 'channel', id: channel.id, gameChannelId: XIAOMI_CHANNEL_ID,
+        shortName: channel.shortName}
+      : null;
+  }
+  function readEmbeddedHandoff() {
+    if (location.pathname !== '/x/pc/index.php') return null;
+    try {
+      const raw = sessionStorage.getItem(EMBEDDED_HANDOFF_KEY);
+      if (typeof raw !== 'string' || !raw || raw.length > EMBEDDED_HANDOFF_MAX_BYTES) return null;
+      const handoff = JSON.parse(raw);
+      if (!handoff || typeof handoff !== 'object' || Array.isArray(handoff)) return null;
+      const expires = Number(handoff.expires);
+      if (!Number.isFinite(expires) || expires <= Date.now()) return null;
+      if (!XIAOMI_HANDOFF_NAME_PATTERN.test(String(handoff.name || ''))) return null;
+      return handoff;
+    } catch (_) { return null; }
+  }
+  function directLoginAttemptMarker() {
+    try {
+      const raw = sessionStorage.getItem(DIRECT_LOGIN_ATTEMPT_KEY);
+      if (typeof raw !== 'string' || !raw || raw.length > 4096) return null;
+      const attempt = JSON.parse(raw);
+      if (!attempt || typeof attempt !== 'object' || Array.isArray(attempt)) return null;
+      const expires = Number(attempt.expires);
+      if (attempt.v !== 1 || attempt.provider !== 'xiaomi') return null;
+      if (!XIAOMI_HANDOFF_NAME_PATTERN.test(String(attempt.name || ''))) return null;
+      if (!/^[a-f0-9]{32}$/.test(String(attempt.id || ''))) return null;
+      if (!/^[a-f0-9]{16,64}$/.test(String(attempt.clientToken || ''))) return null;
+      if (!Number.isFinite(expires) || expires <= Date.now()) return null;
+      return attempt;
+    } catch (_) { return null; }
+  }
+  function handoffWindowName() {
+    try {
+      if (typeof unsafeWindow !== 'undefined' && unsafeWindow) return String(unsafeWindow.name || '');
+    } catch (_) {}
+    try { return typeof window === 'undefined' ? '' : String(window.name || ''); } catch (_) { return ''; }
+  }
+  function pendingXiaomiHandoffChannel() {
+    const handoff = readEmbeddedHandoff();
+    if (!handoff || handoff.provider !== 'xiaomi') return null;
+    const attempt = directLoginAttemptMarker();
+    if (!attempt) return null;
+    if (String(handoff.name || '') !== String(attempt.name || '')) return null;
+    if (String(handoff.id || '') !== String(attempt.id || '')) return null;
+    if (String(handoff.clientToken || '') !== String(attempt.clientToken || '')) return null;
+    if (String(handoff.profileId || '') !== String(attempt.profileId || '')) return null;
+    // A one-time handoff is only evidence while it still belongs to the
+    // current tab and matches the direct-login attempt that created it.
+    if (handoffWindowName() !== handoff.name) return null;
+    const channel = xiaomiGameChannel();
+    return channel ? {...channel, source: 'xiaomi_handoff'} : null;
+  }
+  function documentXiaomiProvenanceChannel() {
+    let marker = null;
+    try {
+      const page = typeof unsafeWindow === 'undefined' ? null : unsafeWindow;
+      marker = page ? page[XIAOMI_BOOTSTRAP_KEY] : null;
+    } catch (_) {}
+    if (!marker || typeof marker !== 'object' || marker.provider !== 'xiaomi') return null;
+    const expires = Number(marker.expires);
+    if (!Number.isFinite(expires) || expires <= Date.now()) return null;
+    if (normalizedGameChannelId(marker.channelId) !== XIAOMI_CHANNEL_ID) return null;
+    const channel = xiaomiGameChannel();
+    return channel ? {...channel, source: 'xiaomi_bootstrap'} : null;
+  }
+  function xiaomiProvenanceChannel() {
+    return documentXiaomiProvenanceChannel() || pendingXiaomiHandoffChannel();
+  }
+  function xiaomiDirectLoginAmbiguous() {
+    if (location.pathname !== '/x/pc/index.php') return false;
+    if (routeGameChannelIds().length) return false;
+    // A pending handoff is only an attempt, not proof that the bootstrap
+    // succeeded. Wait for the engine to consume it and publish the document
+    // provenance, so a failed Xiaomi bootstrap can never become a Xiaomi label.
+    if (pendingXiaomiHandoffChannel()) return true;
+    const detected = detectGameLoginChannel();
+    if (detected?.id === 'xiaomi') return false;
+    if (detected && detected.kind !== 'official') return false;
+    // Once the engine consumes the handoff, only a matching document marker
+    // proves that the Xiaomi bootstrap succeeded. A handoff that is still
+    // present but no longer matches this tab is stale and must not contaminate
+    // a later official login.
+    if (readEmbeddedHandoff()) return false;
+    return !!directLoginAttemptMarker();
+  }
   function detectGameLoginChannel() {
     const official = officialGameChannelIds();
     const routeIds = routeGameChannelIds();
@@ -3033,8 +3134,28 @@ const ChannelCore = (() => {
       return routeChannel ? {kind: 'channel', id: routeChannel.id, gameChannelId: routeId,
         shortName: routeChannel.shortName} : null;
     }
+    const routeDefaults = GAME_ROUTE_DEFAULT_CHANNEL_IDS[location.pathname] || [];
     const ids = currentGameChannelIds();
+    const provenance = xiaomiProvenanceChannel();
+    if (provenance) {
+      // A validated one-time Xiaomi handoff or this document's Xiaomi bootstrap
+      // is stronger evidence than the game's early official placeholder. Never
+      // use it to override a different vendor that the runtime actually reports.
+      const conflicting = ids.some(id => id !== XIAOMI_CHANNEL_ID && !official.has(id));
+      if (!conflicting) return provenance;
+    }
     if (!ids.length) return null;
+    // `/x/pc/index.php` has no channel query. The Xiaomi bootstrap protects
+    // ReqObj.channel_id with 320052, while the game can still expose its
+    // official placeholder in AccountInfo. Only trust the route default when
+    // that exact injected channel is present; official logins on the same page
+    // must keep their official runtime channel.
+    for (const id of ids) {
+      if (!routeDefaults.includes(id)) continue;
+      const channel = knownGameChannels().get(id);
+      if (channel) return {kind: 'channel', id: channel.id, gameChannelId: id,
+        shortName: channel.shortName};
+    }
     for (const id of ids) {
       if (official.has(id)) return {kind: 'official', id: 'official', gameChannelId: id, shortName: '官服'};
     }
@@ -3140,10 +3261,10 @@ const ChannelCore = (() => {
     loginSuccessPrompt.hidden = true;
     return true;
   }
-  function showLoginSuccessPrompt() {
+  function showLoginSuccessPrompt(copy = '') {
     const prompt = ensureLoginSuccessPrompt();
     if (!prompt) return false;
-    if (loginSuccessCopy) loginSuccessCopy.textContent = loginSuccessChannelCopy();
+    if (loginSuccessCopy) loginSuccessCopy.textContent = copy || loginSuccessChannelCopy();
     prompt.hidden = false;
     clearTimeout(loginSuccessPromptTimer);
     loginSuccessPromptTimer = setTimeout(hideLoginSuccessPrompt, LOGIN_SUCCESS_PROMPT_MS);
@@ -3163,7 +3284,17 @@ const ChannelCore = (() => {
     }, PANEL_AUTO_HIDE_DELAY_MS);
     return true;
   }
+  function clearPendingGameEntryNotice() {
+    if (!pendingGameEntryNotice) return false;
+    clearTimeout(pendingGameEntryNotice.timer);
+    pendingGameEntryNotice = null;
+    return true;
+  }
+  function discardDirectLoginAttemptMarker() {
+    try { sessionStorage.removeItem(DIRECT_LOGIN_ATTEMPT_KEY); } catch (_) {}
+  }
   function clearLoginSuccessPromptState() {
+    clearPendingGameEntryNotice();
     loginSuccessPromptShown = false;
     clearTimeout(loginSuccessPromptTimer);
     loginSuccessPromptTimer = 0;
@@ -3172,16 +3303,20 @@ const ChannelCore = (() => {
     if (loginSuccessPrompt) loginSuccessPrompt.hidden = true;
     try { sessionStorage.removeItem(LOGIN_SUCCESS_PROMPT_KEY); } catch (_) {}
   }
-  function notifyGameEntrySuccess(reason, stage, meta = {}) {
+  function presentGameEntrySuccess(reason, stage, meta = {}, forcedCopy = '') {
     if (!isGamePage() || loginSuccessPromptShown || loginSuccessPromptMarked()) return false;
+    clearPendingGameEntryNotice();
     const detected = detectGameLoginChannel();
-    const channelMeta = detected ? {
+    const channelMeta = forcedCopy ? {
+      channelId: 'unresolved', channelSource: 'xiaomi_attempt_unresolved'
+    } : detected ? {
       channelId: detected.kind === 'official' ? 'official' : detected.id,
-      channelName: detected.shortName
+      channelName: detected.shortName,
+      channelSource: detected.source || 'runtime'
     } : {};
     let shown = false;
     try {
-      shown = showLoginSuccessPrompt();
+      shown = showLoginSuccessPrompt(forcedCopy);
       if (shown) {
         loginSuccessPromptShown = true;
         try { sessionStorage.setItem(LOGIN_SUCCESS_PROMPT_KEY, '1'); } catch (_) {}
@@ -3194,6 +3329,44 @@ const ChannelCore = (() => {
     }
     schedulePanelAutoHide();
     return shown;
+  }
+  function queueGameEntryNotice(reason, stage, meta = {}) {
+    if (pendingGameEntryNotice) return false;
+    const pending = {reason, stage, meta, deadline: Date.now() + XIAOMI_PROMPT_RESOLVE_MS, timer: 0};
+    const finish = forcedCopy => {
+      if (pendingGameEntryNotice !== pending) return false;
+      pendingGameEntryNotice = null;
+      discardDirectLoginAttemptMarker();
+      return presentGameEntrySuccess(reason, stage, meta, forcedCopy);
+    };
+    const tick = () => {
+      if (pendingGameEntryNotice !== pending) return;
+      pending.timer = 0;
+      if (!isGamePage() || loginSuccessPromptShown || loginSuccessPromptMarked()) {
+        pendingGameEntryNotice = null;
+        return;
+      }
+      if (!xiaomiDirectLoginAmbiguous()) { finish(''); return; }
+      if (Date.now() >= pending.deadline) { finish('已使用账号进入游戏。'); return; }
+      pending.timer = setTimeout(tick, XIAOMI_PROMPT_POLL_MS);
+    };
+    pendingGameEntryNotice = pending;
+    pending.timer = setTimeout(tick, XIAOMI_PROMPT_POLL_MS);
+    return false;
+  }
+  function notifyGameEntrySuccess(reason, stage, meta = {}) {
+    if (!isGamePage() || loginSuccessPromptShown || loginSuccessPromptMarked()) return false;
+    if (xiaomiDirectLoginAmbiguous()) return queueGameEntryNotice(reason, stage, meta);
+    return presentGameEntrySuccess(reason, stage, meta);
+  }
+  function notifySavedLoginEntry() {
+    // Account-management restore on an already-open game page immediately
+    // navigates again. That old document still exposes the previous channel
+    // (or the Xiaomi page's official placeholder), so the success prompt must
+    // wait for the routed document that carries the restored grant.
+    if (isGamePage()) return false;
+    return notifyGameEntrySuccess('登录状态已恢复，账号已进入游戏。', 'game_login',
+      {source: 'saved_login'});
   }
   function panelWasHidden() {
     try { return sessionStorage.getItem(PANEL_HIDDEN_KEY) === '1'; } catch (_) { return false; }
@@ -3227,6 +3400,7 @@ const ChannelCore = (() => {
   }
   function clearGameLoginSession() {
     try { sessionStorage.removeItem(SESSION_LOGIN_KEY); } catch (_) {}
+    discardDirectLoginAttemptMarker();
     clearLoginSuccessPromptState();
     gameLoginAutoCollapsed = false;
   }
@@ -3239,12 +3413,20 @@ const ChannelCore = (() => {
     // keep the panel collapsed; the main login page is handled separately.
     gameLoginAutoCollapsed = true;
     setLoginPanelCollapsed(true);
-    notifyGameEntrySuccess('检测到已进入游戏，账号登录成功。', 'game_login',
-      {source: 'game_page_restore'});
+    // A document-start host panel can be constructed before the embedded
+    // direct engine runs. Defer the notice by one task so the saved-session
+    // Xiaomi bootstrap and its document provenance are installed first; the
+    // notice must never sample the game's old official placeholder.
+    setTimeout(() => {
+      if (!isGamePage()) return;
+      notifyGameEntrySuccess('检测到已进入游戏，账号登录成功。', 'game_login',
+        {source: 'game_page_restore'});
+    }, 0);
     return true;
   }
   function restorePanelStateForPage() {
     if (isOfficialLoginPage()) {
+      discardDirectLoginAttemptMarker();
       clearLoginSuccessPromptState();
       if (loginPageAutoExpandEnabled()) {
         setLoginPanelCollapsed(false);
@@ -4601,8 +4783,7 @@ const ChannelCore = (() => {
       markGameLoginSession();
       gameLoginAutoCollapsed = true;
       setLoginPanelCollapsed(true);
-      notifyGameEntrySuccess('登录状态已恢复，账号已进入游戏。', 'game_login',
-        {source: 'saved_login'});
+      notifySavedLoginEntry();
       updateAccountHeading(); renderAccounts();
       if (isGamePage()) {
         status('登录状态已恢复，正在重新进入游戏…');
@@ -5526,7 +5707,7 @@ const ChannelCore = (() => {
 /* DIRECT-ENGINE-BEGIN */
 (() => {
   'use strict';
-const VERSION = '1.4.7';
+const VERSION = '1.4.8';
   const ORIGIN = 'https://web.sanguosha.com';
   if (location.origin !== ORIGIN || window.top !== window) return;
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
@@ -5537,7 +5718,9 @@ const VERSION = '1.4.7';
   const SESSION_RECORD_EXPIRES_FOREVER = Number.MAX_SAFE_INTEGER;
   const HANDOFF_KEY = 'wegame.qq.handoff.v1';
   const EMBEDDED_HANDOFF_KEY = 'sgs-direct-handoff-v1';
+  const DIRECT_LOGIN_ATTEMPT_KEY = 'sgs-direct-login-attempt-v1';
   const EMBEDDED_HANDOFF_LIMIT = 65536;
+  const DIRECT_LOGIN_ATTEMPT_TTL = 60000;
   // Timeouts are upper bounds for slow networks, not fixed delays. Normal
   // logins still complete as soon as the official handoff is ready.
   const HANDOFF_TTL = 240000;
@@ -6055,8 +6238,25 @@ const VERSION = '1.4.7';
     page.__SGS_GAME_IDENTITY_HOOK__ = true;
     return true;
   }
+  function installChannelProvenance(provider, channel, name, expires) {
+    const value = Object.freeze({
+      provider: String(provider || ''),
+      channelId: String(channel),
+      name: String(name || ''),
+      expires: Number.isFinite(Number(expires)) && Number(expires) > Date.now()
+        ? Number(expires) : Date.now() + HANDOFF_TTL
+    });
+    try {
+      Object.defineProperty(page, '__SGS_XIAOMI_BOOTSTRAP__', {
+        configurable: true, enumerable: false, value
+      });
+    } catch (_) {
+      try { page.__SGS_XIAOMI_BOOTSTRAP__ = value; } catch (__) {}
+    }
+  }
   function installRequestBootstrap(provider, channel, grant, name) {
     const original = {...grant, channel_id: channel};
+    const provenanceExpires = Date.now() + HANDOFF_TTL;
     const channelDescriptor = Object.getOwnPropertyDescriptor(page, 'channel_id');
     if (!channelDescriptor || channelDescriptor.configurable) {
       Object.defineProperty(page, 'channel_id', {configurable: false, get: () => channel, set() {}});
@@ -6093,6 +6293,41 @@ const VERSION = '1.4.7';
       String(request.channel_id) === String(channel),
       'PLATFORM_BOOTSTRAP_UNAVAILABLE', provider + '_bootstrap');
 
+    // `/x/pc` calls customData() after the page has defined CHATOL and may call
+    // it again later. On pages where the userscript arrived after that inline
+    // code, channel_id is a writable data property rather than our accessor,
+    // so re-assert the verified channel after every customData() call.
+    try {
+      const currentCustomData = page.customData;
+      if (typeof currentCustomData === 'function' && !currentCustomData.__SGS_DIRECT_CUSTOM_DATA_HOOK__) {
+        const restoreChannel = function () {
+          try { page.channel_id = channel; } catch (_) {}
+          try {
+            if (page.ReqObj && typeof page.ReqObj === 'object' && !Array.isArray(page.ReqObj)) {
+              page.ReqObj.channel_id = channel;
+            }
+          } catch (_) {}
+        };
+        const wrappedCustomData = function (...args) {
+          const result = currentCustomData.apply(this, args);
+          restoreChannel();
+          return result;
+        };
+        Object.defineProperty(wrappedCustomData, '__SGS_DIRECT_CUSTOM_DATA_HOOK__', {value: true});
+        const customDescriptor = Object.getOwnPropertyDescriptor(page, 'customData');
+        if (!customDescriptor || customDescriptor.configurable) {
+          Object.defineProperty(page, 'customData', {
+            configurable: true, writable: true, enumerable: customDescriptor?.enumerable !== false,
+            value: wrappedCustomData
+          });
+        } else if (customDescriptor.writable) {
+          page.customData = wrappedCustomData;
+        } else if (customDescriptor.set) {
+          page.customData = wrappedCustomData;
+        }
+      }
+    } catch (_) {}
+
     const previous = page.scriptContent;
     let delegate = typeof previous === 'function' ? previous : null;
     const wrap = function (scriptName, source) {
@@ -6119,6 +6354,9 @@ const VERSION = '1.4.7';
     } else {
       try { page.scriptContent = wrap; } catch (_) {}
     }
+    // Provenance is written only after every bootstrap assertion above passed.
+    // A failed bootstrap must never leave a Xiaomi marker on an official page.
+    installChannelProvenance(provider, channel, name, provenanceExpires);
     consumeHandoff(name);
   }
   // The host userscript keeps credentials only in this tab. A one-time
@@ -6133,6 +6371,48 @@ const VERSION = '1.4.7';
       if (typeof raw !== 'string' || !raw || raw.length > EMBEDDED_HANDOFF_LIMIT) return null;
       return JSON.parse(raw);
     } catch (_) { return null; }
+  }
+  function readDirectLoginAttempt() {
+    if (!EMBEDDED) return null;
+    try {
+      const raw = sessionStorage.getItem(DIRECT_LOGIN_ATTEMPT_KEY);
+      if (typeof raw !== 'string' || !raw || raw.length > 4096) return null;
+      const value = JSON.parse(raw);
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    } catch (_) { return null; }
+  }
+  function writeDirectLoginAttempt(value) {
+    if (!EMBEDDED) return false;
+    const raw = JSON.stringify(value);
+    assert(typeof raw === 'string' && raw.length <= 4096,
+      'DIRECT_LOGIN_ATTEMPT_TOO_LARGE', 'handoff');
+    sessionStorage.setItem(DIRECT_LOGIN_ATTEMPT_KEY, raw);
+    return true;
+  }
+  function discardDirectLoginAttempt(name = '') {
+    if (!EMBEDDED) return false;
+    try {
+      if (!name) { sessionStorage.removeItem(DIRECT_LOGIN_ATTEMPT_KEY); return true; }
+      if (readDirectLoginAttempt()?.name === name) {
+        sessionStorage.removeItem(DIRECT_LOGIN_ATTEMPT_KEY);
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+  function directLoginAttemptFor(provider, clientToken, name, profileId, id) {
+    // Standalone mode has no host-created attempt marker. Preserve its original
+    // exact-saved-session requirement instead of rejecting every Xiaomi entry.
+    if (!EMBEDDED) return {v: 1, provider, restored: true};
+    const attempt = readDirectLoginAttempt();
+    if (!attempt || attempt.v !== 1 || attempt.provider !== provider) return null;
+    if (String(attempt.name || '') !== String(name || '')) return null;
+    if (String(attempt.id || '') !== String(id || '')) return null;
+    if (!/^[a-f0-9]{16,64}$/.test(String(attempt.clientToken || ''))) return null;
+    if (String(attempt.clientToken || '') !== String(clientToken || '')) return null;
+    if (String(attempt.profileId || '') !== String(profileId || '')) return null;
+    const expires = Number(attempt.expires);
+    return Number.isFinite(expires) && expires > Date.now() ? attempt : null;
   }
   function writeHandoff(value) {
     if (!EMBEDDED) { GM_setValue(HANDOFF_KEY, value); return; }
@@ -6156,6 +6436,10 @@ const VERSION = '1.4.7';
       return;
     }
     try {
+      const attempt = readDirectLoginAttempt();
+      if (attempt && !(Number(attempt.expires) > Date.now())) {
+        sessionStorage.removeItem(DIRECT_LOGIN_ATTEMPT_KEY);
+      }
       const raw = sessionStorage.getItem(EMBEDDED_HANDOFF_KEY);
       if (!raw) return;
       const value = JSON.parse(raw);
@@ -6365,14 +6649,23 @@ const VERSION = '1.4.7';
         return;
       }
       try {
-        if (EMBEDDED) assert(/^[a-f0-9]{32}$/.test(payload.id || ''), 'SAVED_SESSION_INVALID', 'xiaomi_bootstrap');
-        else {
+        assert(/^[a-f0-9]{32}$/.test(payload.id || ''), 'SAVED_SESSION_INVALID', 'xiaomi_bootstrap');
+        const attempt = directLoginAttemptFor('xiaomi', payload.clientToken, name,
+          payload.profileId, payload.id);
+        assert(attempt,
+          'DIRECT_LOGIN_ATTEMPT_MISMATCH', 'xiaomi_bootstrap');
+        // A restored account still has to point at its exact saved record. A
+        // fresh login may intentionally skip saving and therefore has no record.
+        if (attempt.restored) {
           const saved = savedSession('xiaomi', '', payload.id);
           assert(saved?.id === payload.id && saved.provider === 'xiaomi' && saved.expires > Date.now(),
             'SAVED_SESSION_EXPIRED', 'xiaomi_bootstrap');
+          assert(!payload.profileId || saved.profileId === payload.profileId,
+            'ACCOUNT_MISMATCH', 'xiaomi_bootstrap');
         }
         const result = validateGrant(grant);
         installRequestBootstrap('xiaomi', XIAOMI_CHANNEL, result, name);
+        discardDirectLoginAttempt(name);
       } catch (error) {
         consumeHandoff(name);
         console.error('[统一登录器]', {stage: 'xiaomi_bootstrap', error: error.message});
@@ -10714,8 +11007,25 @@ const VERSION = '1.4.7';
     const routeChannel = route.channel ?? payload.grant?.channel_id;
     assert(routeChannel !== null && routeChannel !== undefined && String(routeChannel) !== '',
       'PLATFORM_CHANNEL_MISMATCH', 'handoff');
-    writeHandoff({name, id: a.savedId, provider: savedProvider, clientToken: a.clientToken,
-      expires: Date.now() + HANDOFF_TTL, ...payload});
+    const profileId = a.__sgsProfileId || a.profileId || '';
+    try {
+      writeHandoff({name, id: a.savedId, profileId,
+        provider: savedProvider, clientToken: a.clientToken,
+        expires: Date.now() + HANDOFF_TTL, ...payload});
+      if (savedProvider === 'xiaomi') {
+        // The game page must be able to distinguish this navigation from a
+        // stale handoff that only shares a provider name. The attempt marker
+        // is tab-scoped, short-lived and bound to the exact handoff/account.
+        writeDirectLoginAttempt({v: 1, provider: savedProvider, name,
+          id: a.savedId, profileId, clientToken: a.clientToken,
+          restored: a.restored === true, saveSession: a.saveSession !== false,
+          expires: Date.now() + DIRECT_LOGIN_ATTEMPT_TTL});
+      }
+    } catch (error) {
+      discardDirectLoginAttempt(name);
+      discardHandoff();
+      throw error;
+    }
     // Only an opaque routing nonce crosses the navigation. Standalone mode uses
     // private GM storage; the embedded host uses one-time tab storage and
     // consumes it synchronously at document-start.
@@ -10729,7 +11039,12 @@ const VERSION = '1.4.7';
       location.assign(ORIGIN + route.path +
         (route.query ? '?channel_id=' + encodeURIComponent(String(routeChannel)) : ''));
     }
-    catch (_) { window.name = ''; discardHandoff(); throw failure('NAVIGATION_FAILED', 'handoff'); }
+    catch (_) {
+      window.name = '';
+      discardDirectLoginAttempt(name);
+      discardHandoff();
+      throw failure('NAVIGATION_FAILED', 'handoff');
+    }
     delete a.grant; delete a.session;
   }
   async function start(provider = 'qq', options = {}) {

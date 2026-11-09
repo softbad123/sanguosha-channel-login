@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-const VERSION = '1.4.7';
+const VERSION = '1.4.8';
   const ORIGIN = 'https://web.sanguosha.com';
   if (location.origin !== ORIGIN || window.top !== window) return;
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
@@ -11,7 +11,9 @@ const VERSION = '1.4.7';
   const SESSION_RECORD_EXPIRES_FOREVER = Number.MAX_SAFE_INTEGER;
   const HANDOFF_KEY = 'wegame.qq.handoff.v1';
   const EMBEDDED_HANDOFF_KEY = 'sgs-direct-handoff-v1';
+  const DIRECT_LOGIN_ATTEMPT_KEY = 'sgs-direct-login-attempt-v1';
   const EMBEDDED_HANDOFF_LIMIT = 65536;
+  const DIRECT_LOGIN_ATTEMPT_TTL = 60000;
   // Timeouts are upper bounds for slow networks, not fixed delays. Normal
   // logins still complete as soon as the official handoff is ready.
   const HANDOFF_TTL = 240000;
@@ -529,8 +531,25 @@ const VERSION = '1.4.7';
     page.__SGS_GAME_IDENTITY_HOOK__ = true;
     return true;
   }
+  function installChannelProvenance(provider, channel, name, expires) {
+    const value = Object.freeze({
+      provider: String(provider || ''),
+      channelId: String(channel),
+      name: String(name || ''),
+      expires: Number.isFinite(Number(expires)) && Number(expires) > Date.now()
+        ? Number(expires) : Date.now() + HANDOFF_TTL
+    });
+    try {
+      Object.defineProperty(page, '__SGS_XIAOMI_BOOTSTRAP__', {
+        configurable: true, enumerable: false, value
+      });
+    } catch (_) {
+      try { page.__SGS_XIAOMI_BOOTSTRAP__ = value; } catch (__) {}
+    }
+  }
   function installRequestBootstrap(provider, channel, grant, name) {
     const original = {...grant, channel_id: channel};
+    const provenanceExpires = Date.now() + HANDOFF_TTL;
     const channelDescriptor = Object.getOwnPropertyDescriptor(page, 'channel_id');
     if (!channelDescriptor || channelDescriptor.configurable) {
       Object.defineProperty(page, 'channel_id', {configurable: false, get: () => channel, set() {}});
@@ -567,6 +586,41 @@ const VERSION = '1.4.7';
       String(request.channel_id) === String(channel),
       'PLATFORM_BOOTSTRAP_UNAVAILABLE', provider + '_bootstrap');
 
+    // `/x/pc` calls customData() after the page has defined CHATOL and may call
+    // it again later. On pages where the userscript arrived after that inline
+    // code, channel_id is a writable data property rather than our accessor,
+    // so re-assert the verified channel after every customData() call.
+    try {
+      const currentCustomData = page.customData;
+      if (typeof currentCustomData === 'function' && !currentCustomData.__SGS_DIRECT_CUSTOM_DATA_HOOK__) {
+        const restoreChannel = function () {
+          try { page.channel_id = channel; } catch (_) {}
+          try {
+            if (page.ReqObj && typeof page.ReqObj === 'object' && !Array.isArray(page.ReqObj)) {
+              page.ReqObj.channel_id = channel;
+            }
+          } catch (_) {}
+        };
+        const wrappedCustomData = function (...args) {
+          const result = currentCustomData.apply(this, args);
+          restoreChannel();
+          return result;
+        };
+        Object.defineProperty(wrappedCustomData, '__SGS_DIRECT_CUSTOM_DATA_HOOK__', {value: true});
+        const customDescriptor = Object.getOwnPropertyDescriptor(page, 'customData');
+        if (!customDescriptor || customDescriptor.configurable) {
+          Object.defineProperty(page, 'customData', {
+            configurable: true, writable: true, enumerable: customDescriptor?.enumerable !== false,
+            value: wrappedCustomData
+          });
+        } else if (customDescriptor.writable) {
+          page.customData = wrappedCustomData;
+        } else if (customDescriptor.set) {
+          page.customData = wrappedCustomData;
+        }
+      }
+    } catch (_) {}
+
     const previous = page.scriptContent;
     let delegate = typeof previous === 'function' ? previous : null;
     const wrap = function (scriptName, source) {
@@ -593,6 +647,9 @@ const VERSION = '1.4.7';
     } else {
       try { page.scriptContent = wrap; } catch (_) {}
     }
+    // Provenance is written only after every bootstrap assertion above passed.
+    // A failed bootstrap must never leave a Xiaomi marker on an official page.
+    installChannelProvenance(provider, channel, name, provenanceExpires);
     consumeHandoff(name);
   }
   // The host userscript keeps credentials only in this tab. A one-time
@@ -607,6 +664,48 @@ const VERSION = '1.4.7';
       if (typeof raw !== 'string' || !raw || raw.length > EMBEDDED_HANDOFF_LIMIT) return null;
       return JSON.parse(raw);
     } catch (_) { return null; }
+  }
+  function readDirectLoginAttempt() {
+    if (!EMBEDDED) return null;
+    try {
+      const raw = sessionStorage.getItem(DIRECT_LOGIN_ATTEMPT_KEY);
+      if (typeof raw !== 'string' || !raw || raw.length > 4096) return null;
+      const value = JSON.parse(raw);
+      return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+    } catch (_) { return null; }
+  }
+  function writeDirectLoginAttempt(value) {
+    if (!EMBEDDED) return false;
+    const raw = JSON.stringify(value);
+    assert(typeof raw === 'string' && raw.length <= 4096,
+      'DIRECT_LOGIN_ATTEMPT_TOO_LARGE', 'handoff');
+    sessionStorage.setItem(DIRECT_LOGIN_ATTEMPT_KEY, raw);
+    return true;
+  }
+  function discardDirectLoginAttempt(name = '') {
+    if (!EMBEDDED) return false;
+    try {
+      if (!name) { sessionStorage.removeItem(DIRECT_LOGIN_ATTEMPT_KEY); return true; }
+      if (readDirectLoginAttempt()?.name === name) {
+        sessionStorage.removeItem(DIRECT_LOGIN_ATTEMPT_KEY);
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+  function directLoginAttemptFor(provider, clientToken, name, profileId, id) {
+    // Standalone mode has no host-created attempt marker. Preserve its original
+    // exact-saved-session requirement instead of rejecting every Xiaomi entry.
+    if (!EMBEDDED) return {v: 1, provider, restored: true};
+    const attempt = readDirectLoginAttempt();
+    if (!attempt || attempt.v !== 1 || attempt.provider !== provider) return null;
+    if (String(attempt.name || '') !== String(name || '')) return null;
+    if (String(attempt.id || '') !== String(id || '')) return null;
+    if (!/^[a-f0-9]{16,64}$/.test(String(attempt.clientToken || ''))) return null;
+    if (String(attempt.clientToken || '') !== String(clientToken || '')) return null;
+    if (String(attempt.profileId || '') !== String(profileId || '')) return null;
+    const expires = Number(attempt.expires);
+    return Number.isFinite(expires) && expires > Date.now() ? attempt : null;
   }
   function writeHandoff(value) {
     if (!EMBEDDED) { GM_setValue(HANDOFF_KEY, value); return; }
@@ -630,6 +729,10 @@ const VERSION = '1.4.7';
       return;
     }
     try {
+      const attempt = readDirectLoginAttempt();
+      if (attempt && !(Number(attempt.expires) > Date.now())) {
+        sessionStorage.removeItem(DIRECT_LOGIN_ATTEMPT_KEY);
+      }
       const raw = sessionStorage.getItem(EMBEDDED_HANDOFF_KEY);
       if (!raw) return;
       const value = JSON.parse(raw);
@@ -839,14 +942,23 @@ const VERSION = '1.4.7';
         return;
       }
       try {
-        if (EMBEDDED) assert(/^[a-f0-9]{32}$/.test(payload.id || ''), 'SAVED_SESSION_INVALID', 'xiaomi_bootstrap');
-        else {
+        assert(/^[a-f0-9]{32}$/.test(payload.id || ''), 'SAVED_SESSION_INVALID', 'xiaomi_bootstrap');
+        const attempt = directLoginAttemptFor('xiaomi', payload.clientToken, name,
+          payload.profileId, payload.id);
+        assert(attempt,
+          'DIRECT_LOGIN_ATTEMPT_MISMATCH', 'xiaomi_bootstrap');
+        // A restored account still has to point at its exact saved record. A
+        // fresh login may intentionally skip saving and therefore has no record.
+        if (attempt.restored) {
           const saved = savedSession('xiaomi', '', payload.id);
           assert(saved?.id === payload.id && saved.provider === 'xiaomi' && saved.expires > Date.now(),
             'SAVED_SESSION_EXPIRED', 'xiaomi_bootstrap');
+          assert(!payload.profileId || saved.profileId === payload.profileId,
+            'ACCOUNT_MISMATCH', 'xiaomi_bootstrap');
         }
         const result = validateGrant(grant);
         installRequestBootstrap('xiaomi', XIAOMI_CHANNEL, result, name);
+        discardDirectLoginAttempt(name);
       } catch (error) {
         consumeHandoff(name);
         console.error('[统一登录器]', {stage: 'xiaomi_bootstrap', error: error.message});
@@ -5188,8 +5300,25 @@ const VERSION = '1.4.7';
     const routeChannel = route.channel ?? payload.grant?.channel_id;
     assert(routeChannel !== null && routeChannel !== undefined && String(routeChannel) !== '',
       'PLATFORM_CHANNEL_MISMATCH', 'handoff');
-    writeHandoff({name, id: a.savedId, provider: savedProvider, clientToken: a.clientToken,
-      expires: Date.now() + HANDOFF_TTL, ...payload});
+    const profileId = a.__sgsProfileId || a.profileId || '';
+    try {
+      writeHandoff({name, id: a.savedId, profileId,
+        provider: savedProvider, clientToken: a.clientToken,
+        expires: Date.now() + HANDOFF_TTL, ...payload});
+      if (savedProvider === 'xiaomi') {
+        // The game page must be able to distinguish this navigation from a
+        // stale handoff that only shares a provider name. The attempt marker
+        // is tab-scoped, short-lived and bound to the exact handoff/account.
+        writeDirectLoginAttempt({v: 1, provider: savedProvider, name,
+          id: a.savedId, profileId, clientToken: a.clientToken,
+          restored: a.restored === true, saveSession: a.saveSession !== false,
+          expires: Date.now() + DIRECT_LOGIN_ATTEMPT_TTL});
+      }
+    } catch (error) {
+      discardDirectLoginAttempt(name);
+      discardHandoff();
+      throw error;
+    }
     // Only an opaque routing nonce crosses the navigation. Standalone mode uses
     // private GM storage; the embedded host uses one-time tab storage and
     // consumes it synchronously at document-start.
@@ -5203,7 +5332,12 @@ const VERSION = '1.4.7';
       location.assign(ORIGIN + route.path +
         (route.query ? '?channel_id=' + encodeURIComponent(String(routeChannel)) : ''));
     }
-    catch (_) { window.name = ''; discardHandoff(); throw failure('NAVIGATION_FAILED', 'handoff'); }
+    catch (_) {
+      window.name = '';
+      discardDirectLoginAttempt(name);
+      discardHandoff();
+      throw failure('NAVIGATION_FAILED', 'handoff');
+    }
     delete a.grant; delete a.session;
   }
   async function start(provider = 'qq', options = {}) {
