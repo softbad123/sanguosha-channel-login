@@ -122,13 +122,24 @@ async function main() {
     assert.strictEqual(choice.accounts.length, 1, 'numeric OPPO owner ids must compare by value');
   }
 
-  for (const pkgName of [null, '', '   ']) {
+  for (const pkgName of [undefined, null, '', '   ']) {
     const {api} = load([...CHOICE_HELPERS, 'oppoGameAccountChoices']);
     const choice = api.oppoGameAccountChoices(oppoValue([
       oppoAccount('SCOPED-BY-REQUEST', {pkgName})
     ]));
     assert.strictEqual(choice.accounts.length, 1,
       'an absent package name inherits the pkgName-scoped OPPO request');
+  }
+
+  {
+    const {api} = load([...CHOICE_HELPERS, 'oppoGameAccountChoices']);
+    assert.throws(() => api.oppoGameAccountChoices(oppoValue([null, undefined])),
+      error => error.message === 'OPPO_GAME_PACKAGE_MISMATCH',
+      'empty game-account entries must be ignored, not crash');
+    assert.throws(() => api.oppoGameAccountChoices(oppoValue([
+      oppoAccount('BAD-TYPE', {pkgName: 1})
+    ])), error => error.message === 'OPPO_GAME_PACKAGE_MISMATCH',
+    'non-string package names must not inherit the request scope');
   }
 
   {
@@ -276,7 +287,7 @@ async function main() {
 
   assert(!/\.innerHTML\b/.test(source.slice(source.indexOf('function chooseAccount'), source.indexOf('function emitDirectEvent'))),
     'account selector must use textContent, not innerHTML');
-  console.log(JSON.stringify({ok: true, checks: 31}, null, 2));
+  console.log(JSON.stringify({ok: true, checks: 37}, null, 2));
 }
 
 main().catch(error => {
