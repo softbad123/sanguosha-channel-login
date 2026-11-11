@@ -2,7 +2,7 @@
 
 在三国杀网页版登录页提供一个统一的多渠道登录面板，把当前浏览器会话接到渠道官方的扫码、网页授权和游卡兑换链路，并在本机提供账号管理与快速直登。
 
-当前版本：`1.4.8`
+当前版本：`1.4.9`
 支持渠道：小米、Vivo、OPPO、华为、荣耀、哔哩哔哩、WeGame、应用宝、Steam（共 9 个）<br>
 运行方式：Tampermonkey 用户脚本（Chrome / Edge / QQ 浏览器极速模式）
 
@@ -18,6 +18,18 @@
 - AI 协作：本项目在设计、实现、测试与文档整理过程中由 `deepseek-v4.1-flash` 模型协作完成；模型参与不构成 DeepSeek 官方发布或背书。
 - 完整贡献者与协作说明：[CONTRIBUTORS.md](CONTRIBUTORS.md)；GitHub 自动统计页：[Contributors](https://github.com/softbad123/sanguosha-channel-login/graphs/contributors)。
 - 维护者：softbad123。修改说明、第三方来源与许可证状态见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 1.4.9 更新
+
+`1.4.9` 修复 OPPO 官方响应中 `gameAccounts[].pkgName` 缺失、为 `null` 或纯空白时被误判为“不是三国杀一将成名角色”的问题。部分双角色账号完成官方登录后会直接报 `OPPO_GAME_PACKAGE_MISMATCH`，无法进入游戏。
+
+- 请求本身固定使用 `com.sgs10th.nearme.gamecenter`；响应未携带包名时按本次请求作用域继续匹配，不再错误拒绝。
+- 仍只接受当前 OPPO 用户本人且没有共享、人脸校验、登录弹窗、保护或交易限制的角色。
+- 非字符串包名以及 `null` / `undefined` 账号条目会被安全忽略，不会在后续读取 `userId` 时崩溃。
+- 正式用户脚本的内嵌引擎已同步；已安装旧版的用户可通过 Tampermonkey 的固定更新地址直接升级。
+- 新增缺失包名、`undefined` / `null` / 空白值、畸形条目和非字符串包名回归测试。`npm test` 的 41 项测试全部通过。
+
+验证边界：本版依据作者与原反馈者的联调结果修复缺失包名分支；异常响应仍会明确失败，不会自动猜测其他游戏角色。详细说明见 [`docs/RELEASE-v1.4.9.md`](docs/RELEASE-v1.4.9.md)。
 
 ## 1.4.8 更新
 
@@ -309,7 +321,7 @@
 3. 下载固定更新地址中的 [`sanguosha-channel-login.user.js`](https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js)，在 Tampermonkey 中导入并启用。Release 中可能同时提供带版本号的副本，内容相同。
 4. 停用或删除旧的“小米服登录器”“统一登录器”以及旧版“三国杀多渠道登录”脚本，避免同页重复注入。
 5. 打开 <https://web.sanguosha.com/login/10th_client/index.html>。
-6. 页面右侧出现登录面板后，确认页脚显示 `v1.4.8 · 9 个渠道`。
+6. 页面右侧出现登录面板后，确认页脚显示 `v1.4.9 · 9 个渠道`。
 
 ### 方式二：从源码安装
 
@@ -398,7 +410,7 @@ QQ 浏览器授权没有返回应用宝校验所需的 `pay_token`。脚本会�
 
 **登录后进入加载页，又返回主登录页**
 
-`1.1.3` 已修复 WeGame 的 `PlatformID` 凭证误判；`1.1.4` 又修复了 QQ 浏览器丢失 `window.name` 后交接无法恢复，以及回退到经典 OL 登录页的问题。若仍复现，请先确认版本为 `1.4.8`、Tampermonkey 为 `5.5.1+`、没有同时启用旧版登录脚本，再从“运行记录”复制或导出反馈日志；日志中会显示失败所在的流程、阶段、错误码、源码行列号和 `cause` 链，便于直接定位。QQ 浏览器慢网下请给官方请求和游戏加载最多 4 分钟，不要连续重复点击登录。
+`1.1.3` 已修复 WeGame 的 `PlatformID` 凭证误判；`1.1.4` 又修复了 QQ 浏览器丢失 `window.name` 后交接无法恢复，以及回退到经典 OL 登录页的问题。若仍复现，请先确认版本为 `1.4.9`、Tampermonkey 为 `5.5.1+`、没有同时启用旧版登录脚本，再从“运行记录”复制或导出反馈日志；日志中会显示失败所在的流程、阶段、错误码、源码行列号和 `cause` 链，便于直接定位。QQ 浏览器慢网下请给官方请求和游戏加载最多 4 分钟，不要连续重复点击登录。
 
 **慢网络下如何理解超时**
 

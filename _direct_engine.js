@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-const VERSION = '1.4.8';
+const VERSION = '1.4.9';
   const ORIGIN = 'https://web.sanguosha.com';
   if (location.origin !== ORIGIN || window.top !== window) return;
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';

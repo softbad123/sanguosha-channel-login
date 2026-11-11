@@ -7,7 +7,7 @@
 // @supportURL   https://github.com/softbad123/sanguosha-channel-login/issues
 // @updateURL    https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
 // @downloadURL  https://github.com/softbad123/sanguosha-channel-login/releases/latest/download/sanguosha-channel-login.user.js
-// @version      1.4.8
+// @version      1.4.9
 // @description  在三国杀官网按渠道接入本人账号；支持官方扫码、官方网页登录和小米 QQ / 微信授权。可选保存本机可恢复的官方登录状态，绝不保存密码或验证码。
 // @match        https://web.sanguosha.com/*
 // @match        https://joint.vivo.com.cn/game-subaccount-login/*
@@ -2093,7 +2093,7 @@ const ChannelCore = (() => {
   const LEGACY_TRANSIENT_PROFILE_KEY = CHANNEL.contextPrefix + '-transient-profile-v1';
   const LOGIN_PAGE = 'https://web.sanguosha.com/login/10th_client/index.html';
   const PENDING_ACCOUNT_KEY = 'sgs-unified-pending-account-v1';
-  const VERSION = '1.4.8';
+  const VERSION = '1.4.9';
   const NETWORK_TIMEOUT = 60000;
   const GAME_ROUTE_PATTERN = /^\/(?:x|10|10th|login)\/pc\//;
   const OFFICIAL_LOGIN_ROUTE_PATTERN = /^\/login\/(?:(?:10th_client|x)(?:\/index(?:\.html)?)?|index(?:\.html)?)\/?$/;
@@ -5707,7 +5707,7 @@ const ChannelCore = (() => {
 /* DIRECT-ENGINE-BEGIN */
 (() => {
   'use strict';
-const VERSION = '1.4.8';
+const VERSION = '1.4.9';
   const ORIGIN = 'https://web.sanguosha.com';
   if (location.origin !== ORIGIN || window.top !== window) return;
   const LOGIN_PAGE = ORIGIN + '/login/10th_client/index.html';
