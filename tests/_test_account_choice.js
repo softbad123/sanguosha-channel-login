@@ -122,6 +122,15 @@ async function main() {
     assert.strictEqual(choice.accounts.length, 1, 'numeric OPPO owner ids must compare by value');
   }
 
+  for (const pkgName of [null, '', '   ']) {
+    const {api} = load([...CHOICE_HELPERS, 'oppoGameAccountChoices']);
+    const choice = api.oppoGameAccountChoices(oppoValue([
+      oppoAccount('SCOPED-BY-REQUEST', {pkgName})
+    ]));
+    assert.strictEqual(choice.accounts.length, 1,
+      'an absent package name inherits the pkgName-scoped OPPO request');
+  }
+
   {
     const {api, context} = load([...CHOICE_HELPERS, 'oppoGameAccountChoices', 'oppoGameCredentials']);
     let spec = null;

@@ -4572,7 +4572,10 @@ const VERSION = '1.4.8';
     const stage = 'oppo_game_account';
     assert(value && String(value.code) === '200', 'OPPO_GAME_ACCOUNT_REJECTED', stage);
     const games = Array.isArray(value.gameAccounts) ? value.gameAccounts : [];
-    const sgsGames = games.filter(game => game && game.pkgName === 'com.sgs10th.nearme.gamecenter');
+    const sgsGames = games.filter(game => {
+      const pkgName = game && typeof game.pkgName === 'string' ? game.pkgName.trim() : '';
+      return !pkgName || pkgName === 'com.sgs10th.nearme.gamecenter';
+    });
     assert(sgsGames.length > 0, 'OPPO_GAME_PACKAGE_MISMATCH', stage);
     const parent = fields(value.userDto, ['userId'], stage).userId;
     // The SDK has shipped userId as both a JSON number and a string. Compare
